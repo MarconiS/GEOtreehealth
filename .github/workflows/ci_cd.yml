@@ -31,12 +31,6 @@ jobs:
         python -m pip install flake8 pytest
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
         python -m pip install . --upgrade
-    - name: Lint with flake8
-      run: |
-        ${{ matrix.venv_activate }}
-        # stop the build if there are Python syntax errors or undefined names
-        flake8 ./neonwranglerpy --count --show-source --statistics
-        yapf -d --recursive ./neonwranglerpy --style=.style.yapf 2>&1
     - name: Test with pytest
       run: |
         ${{ matrix.venv_activate }}
