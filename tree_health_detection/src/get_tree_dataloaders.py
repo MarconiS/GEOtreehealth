@@ -245,7 +245,6 @@ def __main__(get_clips = True):
     stem_positions = gpd.read_file("Data/geolocations/SERC/field.shp")
     hyperspectral_tile = '/home/smarconi/Documents/DAT_for_health/SERC/SERC/HSI.tif'
     rgb_tile = '/home/smarconi/Documents/DAT_for_health/SERC/SERC/2021_SERC_5_364000_4305000_image.tif'
-    #comet_ml.config.save(api_key="fVhiP3vIQJUBeZyuKJWN9KjSO")
 
     # remove points not visible from sky
     stem_positions = stem_positions[stem_positions['Crwnpst'] >2]
