@@ -2,7 +2,7 @@ import unittest
 import numpy as np
 import os
 
-from tree_health_detection.src.train_val_test import train, validate, test
+from tree_health_detection.src.train_val_t import train, validate, test
 from tree_health_detection.src.utils import create_subset, save_dataset, load_dataset, normalize_rgb, clean_hsi_to_0_255_range
 
 class TestTreeHealthDetection(unittest.TestCase):
