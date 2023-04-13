@@ -35,7 +35,7 @@ class TNet(nn.Module):
         return matrix
 
 class LiDARModel(nn.Module):
-    def __init__(self, num_points=2048, num_classes=3):
+    def __init__(self, num_points=None, num_classes=3):
         super(LiDARModel, self).__init__()
         self.tnet3 = TNet(k=3)
         self.tnet64 = TNet(k=64)
@@ -54,6 +54,8 @@ class LiDARModel(nn.Module):
 
         self.bn4 = nn.BatchNorm1d(512)
         self.bn5 = nn.BatchNorm1d(256)
+
+        self.num_points = num_points
 
     def forward(self, x):
         batch_size = x.size(0)
@@ -80,4 +82,3 @@ class LiDARModel(nn.Module):
         x = torch.relu(self.bn5(self.fc2(x)))
         x = self.fc3(x)
         return x
-

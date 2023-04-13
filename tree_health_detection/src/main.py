@@ -23,17 +23,28 @@ from tree_health_detection.src import multimodal as mti
 from tree_health_detection.src import train_val_t as tvt
 from tree_health_detection.src.spectral_attention import *
 from tree_health_detection.src.utils import *
-from tree_health_detection.src import multimodal as mti
-from tree_health_detection.src import train_val_t as tvt
 
 def __main__(get_clips = True):
-    stem_positions = gpd.read_file("Data/geolocations/SERC/field.shp")
+    stem_positions = gpd.read_file("/home/smarconi/Documents/GitHub/Macrosystems_analysis/Data/geolocations/SERC/field.shp")
+
     hyperspectral_tile = '/home/smarconi/Documents/DAT_for_health/SERC/SERC/HSI.tif'
     rgb_tile = '/home/smarconi/Documents/DAT_for_health/SERC/SERC/2021_SERC_5_364000_4305000_image.tif'
-
+    las_file = '/home/smarconi/Documents/GitHub/Macrosystems_analysis/Data/remotesensing/DP1.30003.001/neon-aop-products/2021/FullSite/D02/2021_SERC_5/L1/DiscreteLidar/ClassifiedPointCloud/NEON_D02_SERC_DP1_364000_4305000_classified_point_cloud_colorized.laz'
     # remove points not visible from sky
     stem_positions = stem_positions[stem_positions['Crwnpst'] >2]
     #stem_positions = stem_positions[stem_positions['target_column'].isin(['value_1', 'value_2', 'value_3'])]
+    # just for testing, get 50 per class
+
+    # select 50 rows with value "A" in column_1
+    sample_A = stem_positions.loc[stem_positions['Status'] == 'A'].sample(n=280)
+    # select 50 rows with value "B" in column_1
+    sample_B = stem_positions.loc[stem_positions['Status'] == 'AU'].sample(n=280)
+    # select 50 rows with value "C" in column_1
+    sample_C = stem_positions.loc[stem_positions['Status'] == 'DS'].sample(n=280)
+    # concatenate the three samples into one GeoDataFrame
+    stem_positions = gpd.GeoDataFrame(pd.concat([sample_A, sample_B, sample_C]))
+    # optionally reset the index of the sample GeoDataFrame
+    stem_positions = stem_positions.reset_index(drop=True)
 
     health_classes = stem_positions.Status
     le = LabelEncoder()
@@ -50,18 +61,25 @@ def __main__(get_clips = True):
         rgb_data = extract_hyperspectral_data(rgb_tile, bounding_boxes)
         save_dataset(rgb_data, 'tree_health_detection/loaders/rgb_SERC.pkl')
 
+        las_data = extract_pointcloud_data(las_file, bounding_boxes)
+        save_dataset(las_data, 'tree_health_detection/loaders/las_SERC.pkl')
+
     # Load the saved dataset
     if 'hyperspectral_data' not in locals():
         hyperspectral_data = load_dataset('tree_health_detection/loaders/hyperspectral_SERC.pkl')
     if 'rgb_data' not in locals():
         rgb_data = load_dataset('tree_health_detection/loaders/rgb_SERC.pkl')
+    if 'las_data' not in locals():
+        las_data = load_dataset('tree_health_detection/loaders/las_SERC.pkl')
 
     # Split the dataset
-    species = stem_positions.Species # List of species corresponding to each data point
+    #las_data = [np.expand_dims(x, axis=0) for x in las_data]
+
+    species = stem_positions.Status # List of species corresponding to each data point
     geography = stem_positions.SiteID # List of geography information corresponding to each data point
     
     #hsi = CustomDataset(hyperspectral_data, health_classes, label_to_int)
-    train_data, val_data, test_data = split_dataset(rgb_data, hyperspectral_data, rgb_data, health_classes)
+    train_data, val_data, test_data = split_dataset(rgb_data, hyperspectral_data, las_data, health_classes)
 
     train_dataset = MultiModalDataset(*train_data) #transform = CustomResize((128, 128))
     val_dataset = MultiModalDataset(*val_data)
@@ -70,7 +88,8 @@ def __main__(get_clips = True):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     batch_size = 32
-    num_epochs = 50
+    num_epochs = 10
+    lidar_output_size = 3
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
@@ -80,9 +99,10 @@ def __main__(get_clips = True):
     num_bands = train_dataset.hs_data[0].shape[0]
     num_classes = len(set(health_classes))
     #model = SpectralAttentionClassifier(num_bands, num_classes)
+    from tree_health_detection.src import multimodal as mti
+    from tree_health_detection.src import train_val_t as tvt
 
-
-    model = mti.MultiModalModel(num_classes, num_bands)
+    model = mti.MultiModalModel(num_classes, num_bands, lidar_output_size)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")

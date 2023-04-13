@@ -7,9 +7,13 @@ from sklearn.preprocessing import LabelEncoder
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 from torchvision.utils import save_image
+from torch_geometric.data import Data
+
 import comet_ml
 import cv2
 import geopandas as gpd
+import torch_geometric as geo
+
 import matplotlib.pyplot as plt
 import numpy as np
 import os
@@ -82,23 +86,23 @@ def extract_hyperspectral_data(hyperspectral_tile, bounding_boxes):
 
 def extract_pointcloud_data(lidar_file, bounding_boxes):
     extracted_data = []
-    with laspy.file.File(lidar_file, mode="r") as src:
-        # Get point cloud data as structured array
-        points = src.points.copy().view(np.dtype((np.void, src.points.dtype.itemsize)))
+    src =  laspy.read(lidar_file) 
+    # Get point cloud data as structured array
+    points = src.xyz.copy()  #.view(np.dtype((np.void, src.points.dtype.itemsize)))
 
-        # Get X, Y, and Z coordinates
-        x_coords = src.x
-        y_coords = src.y
-        z_coords = src.z
+    # Get X, Y, and Z coordinates
+    x_coords = src.x
+    y_coords = src.y
+    z_coords = src.z
 
-        for _, row in bounding_boxes.iterrows():
-            bounds = row.geometry.bounds
-            min_x, min_y, max_x, max_y = bounds
+    for _, row in bounding_boxes.iterrows():
+        bounds = row.geometry.bounds
+        min_x, min_y, max_x, max_y = bounds
 
-            # Filter points within the bounding box
-            mask = (x_coords >= min_x) & (x_coords <= max_x) & (y_coords >= min_y) & (y_coords <= max_y)
-            filtered_points = points[mask]
-            extracted_data.append(filtered_points)
+        # Filter points within the bounding box
+        mask = (x_coords >= min_x) & (x_coords <= max_x) & (y_coords >= min_y) & (y_coords <= max_y)
+        filtered_points = points[mask]
+        extracted_data.append(filtered_points)
 
     return extracted_data
 
@@ -175,8 +179,30 @@ class MultiModalDataset(Dataset):
         lidar = torch.from_numpy(lidar).float()
         label = torch.tensor(label).long()
 
+        # Create graph from lidar data
+        lidar = geo.data.Data(x=lidar.transpose(1, 0))
+
         return rgb, hs, lidar, label
 
+
+def custom_collate_fn(batch):
+    # Stack RGB and hyperspectral tensors
+    rgb_list, hs_list, lidar_list, labels = zip(*batch)
+    rgb = torch.stack(rgb_list)
+    hs = torch.stack(hs_list)
+    labels = torch.stack(labels)
+
+    # Stack LiDAR tensors as graphs
+    batch_size = len(lidar_list)
+    lidar_graphs = []
+    for i in range(batch_size):
+        num_points = lidar_list[i].shape[0]
+        edge_index = torch.tensor([[j, k] for j in range(num_points) for k in range(j+1, num_points)])
+        edge_index = edge_index.t().contiguous()
+        edge_index = torch.cat([edge_index, edge_index[[1, 0], :]], dim=1)
+        graph = Data(x=lidar_list[i], edge_index=edge_index)
+        lidar_graphs.append(graph)
+    return rgb, hs, lidar_graphs, labels
 
 # Save the dataset to a pickle file
 def save_dataset(dataset, file_name):
