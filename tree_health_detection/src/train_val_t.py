@@ -7,6 +7,7 @@ from torch.utils.data import DataLoader, random_split
 from torchvision import datasets, transforms
 from torchvision.utils import save_image
 import os
+from tree_health_detection.src.utils import plot_validation_images
 
 def train(model, dataloader, criterion, optimizer, device, experiment):
     model.train()
@@ -73,7 +74,7 @@ def validate(model, dataloader, criterion, device, experiment):
 
 
 
-def test(model, dataloader, device):
+def test(model, dataloader, device, experiment):
     model.eval()
     true_labels = []
     predicted_labels = []
@@ -89,6 +90,8 @@ def test(model, dataloader, device):
 
             true_labels.extend(labels.cpu().numpy())
             predicted_labels.extend(predicted.cpu().numpy())
+            #fig = plot_validation_images(rgb, true_labels, predicted_labels)
+            #experiment.log_figure("Validation Images", fig)
 
     return true_labels, predicted_labels
 
