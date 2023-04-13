@@ -14,31 +14,13 @@ def train(model, dataloader, criterion, optimizer, device, experiment):
     correct = 0
     total = 0
 
-    for batch_idx, data in enumerate(dataloader):
-        rgb, hs, lidar, labels = data
-        rgb, hs, lidar, labels = rgb.to(device), hs.to(device), lidar.to(device), labels.to(device)
-
-        # Log images to Comet.ml
-        if batch_idx % 10 == 0:  # Log every 10th batch
-            img_dir = "temp_images"
-            os.makedirs(img_dir, exist_ok=True)
-
-            for i in range(min(3, rgb.size(0))):  # Log 3 images per batch
-                # Save and log RGB images
-                save_image(rgb[i].cpu(), f"{img_dir}/rgb_{batch_idx}_{i}.png")
-                experiment.log_image(f"{img_dir}/rgb_{batch_idx}_{i}.png", step=batch_idx, image_channels="first")
-
-                # Save and log HSI images
-                save_image(hs[i].cpu(), f"{img_dir}/hsi_{batch_idx}_{i}.png")
-                experiment.log_image(f"{img_dir}/hsi_{batch_idx}_{i}.png", step=batch_idx, image_channels="first")
-
-                # Save and log LiDAR images
-                save_image(lidar[i].cpu(), f"{img_dir}/lidar_{batch_idx}_{i}.png")
-                experiment.log_image(f"{img_dir}/lidar_{batch_idx}_{i}.png", step=batch_idx, image_channels="first")
-
-            # Clean up the temporary images directory
-            for file in os.listdir(img_dir):
-                os.remove(os.path.join(img_dir, file))
+    for batch_idx, (rgb, hs, lidar, labels) in enumerate(dataloader):
+        # Pass the LiDAR data to the model one at a time
+        rgb, hs, labels = rgb.float().to(device), hs.float().to(device), labels.to(device)
+        
+        # Convert lidar data to PyTorch tensors and move to device
+        lidar = [l.float().to(device) for l in lidar]
+        rgb, hs, labels = rgb.to(device), hs.to(device), labels.to(device)
 
         # Train the model
         optimizer.zero_grad()
@@ -70,7 +52,8 @@ def validate(model, dataloader, criterion, device, experiment):
     with torch.no_grad():
         for data in dataloader:
             rgb, hs, lidar, labels = data
-            rgb, hs, lidar, labels = rgb.to(device), hs.to(device), lidar.to(device), labels.to(device)
+            rgb, hs, labels =  rgb.float().to(device), hs.float().to(device), labels.to(device)
+            lidar = [l.float().to(device) for l in lidar]
 
             outputs = model(rgb, hs, lidar)
             loss = criterion(outputs, labels)
@@ -98,7 +81,8 @@ def test(model, dataloader, device):
     with torch.no_grad():
         for data in dataloader:
             rgb, hs, lidar, labels = data
-            rgb, hs, lidar, labels = rgb.to(device), hs.to(device), lidar.to(device), labels.to(device)
+            rgb, hs, labels =  rgb.float().to(device), hs.float().to(device), labels.to(device)
+            lidar = [l.float().to(device) for l in lidar]
 
             outputs = model(rgb, hs, lidar)
             _, predicted = outputs.max(1)

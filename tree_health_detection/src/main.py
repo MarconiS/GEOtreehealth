@@ -26,21 +26,15 @@ from tree_health_detection.src.utils import *
 
 def __main__(get_clips = True):
     stem_positions = gpd.read_file("/home/smarconi/Documents/GitHub/Macrosystems_analysis/Data/geolocations/SERC/field.shp")
-
     hyperspectral_tile = '/home/smarconi/Documents/DAT_for_health/SERC/SERC/HSI.tif'
     rgb_tile = '/home/smarconi/Documents/DAT_for_health/SERC/SERC/2021_SERC_5_364000_4305000_image.tif'
     las_file = '/home/smarconi/Documents/GitHub/Macrosystems_analysis/Data/remotesensing/DP1.30003.001/neon-aop-products/2021/FullSite/D02/2021_SERC_5/L1/DiscreteLidar/ClassifiedPointCloud/NEON_D02_SERC_DP1_364000_4305000_classified_point_cloud_colorized.laz'
     # remove points not visible from sky
     stem_positions = stem_positions[stem_positions['Crwnpst'] >2]
-    #stem_positions = stem_positions[stem_positions['target_column'].isin(['value_1', 'value_2', 'value_3'])]
-    # just for testing, get 50 per class
-
-    # select 50 rows with value "A" in column_1
-    sample_A = stem_positions.loc[stem_positions['Status'] == 'A'].sample(n=280)
-    # select 50 rows with value "B" in column_1
-    sample_B = stem_positions.loc[stem_positions['Status'] == 'AU'].sample(n=280)
-    # select 50 rows with value "C" in column_1
-    sample_C = stem_positions.loc[stem_positions['Status'] == 'DS'].sample(n=280)
+    # just for testing, get some per class
+    sample_A = stem_positions.loc[stem_positions['Status'] == 'A'].sample(n=280, random_state=42)
+    sample_B = stem_positions.loc[stem_positions['Status'] == 'AU'].sample(n=280,random_state=42)
+    sample_C = stem_positions.loc[stem_positions['Status'] == 'DS'].sample(n=280, random_state=42)
     # concatenate the three samples into one GeoDataFrame
     stem_positions = gpd.GeoDataFrame(pd.concat([sample_A, sample_B, sample_C]))
     # optionally reset the index of the sample GeoDataFrame
@@ -77,7 +71,7 @@ def __main__(get_clips = True):
 
     species = stem_positions.Status # List of species corresponding to each data point
     geography = stem_positions.SiteID # List of geography information corresponding to each data point
-    
+
     #hsi = CustomDataset(hyperspectral_data, health_classes, label_to_int)
     train_data, val_data, test_data = split_dataset(rgb_data, hyperspectral_data, las_data, health_classes)
 
@@ -88,47 +82,45 @@ def __main__(get_clips = True):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     batch_size = 32
-    num_epochs = 10
-    lidar_output_size = 3
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
+    num_epochs = 50
+    lidar_output_size = 93
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0, collate_fn=custom_collate_fn)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0, collate_fn=custom_collate_fn)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=0, collate_fn=custom_collate_fn)
 
     #train model
     # Define the model, loss function, and optimizer
     num_bands = train_dataset.hs_data[0].shape[0]
     num_classes = len(set(health_classes))
     #model = SpectralAttentionClassifier(num_bands, num_classes)
+    del mti, tvt
     from tree_health_detection.src import multimodal as mti
     from tree_health_detection.src import train_val_t as tvt
 
-    model = mti.MultiModalModel(num_classes, num_bands, lidar_output_size)
+    model = mti.MultiModalModel(num_classes, num_bands)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
 
     #set up comet experiment
     experiment = Experiment(project_name="treehealth", workspace="marconis")
     # Starting the experiment
     for epoch in range(num_epochs):
-        experiment.log_current_epoch(epoch)
-
         train_loss, train_accuracy = tvt.train(model, train_loader, criterion, optimizer, device, experiment)
         val_loss, val_accuracy, true_labels, predicted_labels = tvt.validate(model, val_loader, criterion, device, experiment)
-
         # Calculate the confusion matrix for the validation set
         conf_matrix = confusion_matrix(true_labels, predicted_labels)
-
         # Log the confusion matrix, accuracy, and loss to Comet.ml
+        experiment.log_current_epoch(epoch)
         experiment.log_confusion_matrix(labels=list(range(num_classes)), matrix=conf_matrix, step=epoch, title="Validation Confusion Matrix")
         experiment.log_metric("val_loss", val_loss, step=epoch)
         experiment.log_metric("val_accuracy", val_accuracy, step=epoch)
-
         print(f"Epoch: {epoch+1}/{num_epochs}, Train Loss: {train_loss:.4f}, Train Accuracy: {train_accuracy:.4f}, Val Loss: {val_loss:.4f}, Val Accuracy: {val_accuracy:.4f}")
 
     # Testing the model
     true_labels, predicted_labels = tvt.test(model, test_loader, device)
+    #fig = plot_validation_images(images, true_labels, predicted_labels)
+    #experiment.log_figure("Validation Images", fig)
 
     # Calculate the confusion matrix
     conf_matrix = confusion_matrix(true_labels, predicted_labels)
@@ -145,3 +137,4 @@ def __main__(get_clips = True):
     experiment.end()
 
     return(model)
+

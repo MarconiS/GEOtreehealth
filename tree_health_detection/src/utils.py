@@ -7,7 +7,7 @@ from sklearn.preprocessing import LabelEncoder
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 from torchvision.utils import save_image
-from torch_geometric.data import Data
+from torch_geometric.data import Data, Batch
 
 import comet_ml
 import cv2
@@ -173,36 +173,33 @@ class MultiModalDataset(Dataset):
         if self.transform:
             rgb, hs, lidar, label = self.transform(rgb, hs, lidar, label)
 
-        # Convert the data to Float tensors
-        rgb = torch.from_numpy(rgb).float()
-        hs = torch.from_numpy(hs).float()
-        lidar = torch.from_numpy(lidar).float()
-        label = torch.tensor(label).long()
-
-        # Create graph from lidar data
-        lidar = geo.data.Data(x=lidar.transpose(1, 0))
-
         return rgb, hs, lidar, label
 
 
-def custom_collate_fn(batch):
-    # Stack RGB and hyperspectral tensors
-    rgb_list, hs_list, lidar_list, labels = zip(*batch)
-    rgb = torch.stack(rgb_list)
-    hs = torch.stack(hs_list)
-    labels = torch.stack(labels)
 
-    # Stack LiDAR tensors as graphs
-    batch_size = len(lidar_list)
-    lidar_graphs = []
-    for i in range(batch_size):
-        num_points = lidar_list[i].shape[0]
-        edge_index = torch.tensor([[j, k] for j in range(num_points) for k in range(j+1, num_points)])
-        edge_index = edge_index.t().contiguous()
-        edge_index = torch.cat([edge_index, edge_index[[1, 0], :]], dim=1)
-        graph = Data(x=lidar_list[i], edge_index=edge_index)
-        lidar_graphs.append(graph)
-    return rgb, hs, lidar_graphs, labels
+def custom_collate_fn(batch):
+    # Separate the input data
+    rgb_batch, hs_batch, lidar_batch, labels_batch = zip(*batch)
+
+    # Convert to tensors and stack RGB and hyperspectral data
+    rgb_batch = torch.stack([torch.from_numpy(rgb) for rgb in rgb_batch], dim=0)
+    hs_batch = torch.stack([torch.from_numpy(hs) for hs in hs_batch], dim=0)
+
+    # For LiDAR data with varying sizes, use a list instead of stacking
+    # No need to use Data class from torch_geometric
+    #lidar_batch = torch.stack([torch.tensor(l) for l in lidar_batch], dim=0)
+
+    # TODO for now accept padding. next week figure how to make it graph without padding and breaking things
+    max_points = max(l.shape[0] for l in lidar_batch)
+    lidar_batch = torch.stack([torch.tensor(np.pad(l, ((0, max_points - l.shape[0]), (0, 0)), mode='constant')) for l in lidar_batch], dim=0)
+
+    # Convert labels to tensors and stack
+    labels_batch = torch.stack([torch.tensor(label) for label in labels_batch], dim=0)
+
+    return rgb_batch, hs_batch, lidar_batch, labels_batch
+
+
+
 
 # Save the dataset to a pickle file
 def save_dataset(dataset, file_name):
@@ -275,3 +272,17 @@ def split_dataset(rgb_data, hs_data, lidar_data, health_classes, stratify_1=None
 
     return (train_rgb, train_hs, train_lidar, train_labels), (val_rgb, val_hs, val_lidar, val_labels), (test_rgb, test_hs, test_lidar, test_labels)
 
+
+def plot_validation_images(images, true_labels, predicted_labels, num_images=10):
+    fig, axes = plt.subplots(1, num_images, figsize=(20, 20))
+    axes = axes.ravel()
+
+    for i in np.arange(0, num_images):
+        axes[i].imshow(images[i], cmap=plt.cm.binary)
+        axes[i].set_title(
+            f"True: {true_labels[i]}, Predicted: {predicted_labels[i]}", fontsize=12
+        )
+        axes[i].axis("off")
+
+    plt.subplots_adjust(wspace=1)
+    return fig
