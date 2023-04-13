@@ -8,6 +8,7 @@ from torchvision import datasets, transforms
 from torchvision.utils import save_image
 import os
 from tree_health_detection.src.utils import plot_validation_images
+#import matplotlib.pyplot as plt
 
 def train(model, dataloader, criterion, optimizer, device, experiment):
     model.train()
@@ -74,15 +75,22 @@ def validate(model, dataloader, criterion, device, experiment):
 
 
 
-def test(model, dataloader, device, experiment):
+def test(model, dataloader, device, experiment, noGUI = True, bands_to_plot = [18,56,135]):
+    #make sure you can plot tests
+    if noGUI:
+        import matplotlib
+        matplotlib.use('Agg')
+        
+    import matplotlib.pyplot as plt
     model.eval()
     true_labels = []
     predicted_labels = []
+    logged_images = 0
 
     with torch.no_grad():
         for data in dataloader:
             rgb, hs, lidar, labels = data
-            rgb, hs, labels =  rgb.float().to(device), hs.float().to(device), labels.to(device)
+            rgb, hs, labels = rgb.float().to(device), hs.float().to(device), labels.to(device)
             lidar = [l.float().to(device) for l in lidar]
 
             outputs = model(rgb, hs, lidar)
@@ -90,8 +98,25 @@ def test(model, dataloader, device, experiment):
 
             true_labels.extend(labels.cpu().numpy())
             predicted_labels.extend(predicted.cpu().numpy())
-            #fig = plot_validation_images(rgb, true_labels, predicted_labels)
-            #experiment.log_figure("Validation Images", fig)
+
+            # Log images and predictions
+            sampling_rate =5
+            if logged_images % sampling_rate == 0:
+                for i in range(len(rgb)):
+                    # Convert tensors to numpy arrays and transpose the axes
+                    rgb_np = rgb[i].cpu().numpy().transpose(1, 2, 0)
+                    # TODO retro
+                    hs_np = hs[i].cpu().numpy()[bands_to_plot]
+
+                    # Normalize to [0, 1] range for floats
+                    rgb_np = (rgb_np - rgb_np.min()) / (rgb_np.max() - rgb_np.min())
+
+                    # sepect 3 bands and normalize hs
+                    hs_np = (hs_np - hs_np.min()) / (hs_np.max() - hs_np.min())
+
+                    # Plot and log images
+                    fig = plot_validation_images([rgb_np, hs_np], [f"True: {true_labels[-1]}, Predicted: {predicted_labels[-1]}"] * 2, noGUI, cmap="gray" if hs_np.ndim == 2 else None)
+                    experiment.log_figure("Test Images", fig)
+                    plt.close(fig)
 
     return true_labels, predicted_labels
-

@@ -14,7 +14,7 @@ import cv2
 import geopandas as gpd
 import torch_geometric as geo
 
-import matplotlib.pyplot as plt
+#import matplotlib.pyplot as plt
 import numpy as np
 import os
 import pandas as pd
@@ -273,16 +273,16 @@ def split_dataset(rgb_data, hs_data, lidar_data, health_classes, stratify_1=None
     return (train_rgb, train_hs, train_lidar, train_labels), (val_rgb, val_hs, val_lidar, val_labels), (test_rgb, test_hs, test_lidar, test_labels)
 
 
-def plot_validation_images(images, true_labels, predicted_labels, num_images=10):
-    fig, axes = plt.subplots(1, num_images, figsize=(20, 20))
-    axes = axes.ravel()
-
-    for i in np.arange(0, num_images):
-        axes[i].imshow(images[i], cmap=plt.cm.binary)
-        axes[i].set_title(
-            f"True: {true_labels[i]}, Predicted: {predicted_labels[i]}", fontsize=12
-        )
-        axes[i].axis("off")
-
-    plt.subplots_adjust(wspace=1)
+def plot_validation_images(images, titles, noGUI = True, cmap=None):
+    if noGUI:
+        import matplotlib
+        matplotlib.use('Agg')
+        
+    import matplotlib.pyplot as plt
+    num_images = len(images)
+    fig, axes = plt.subplots(1, num_images, figsize=(5 * num_images, 5))
+    for ax, image, title in zip(axes, images, titles):
+        ax.imshow(image, cmap=cmap)
+        ax.set_title(title)
+        ax.axis("off")
     return fig

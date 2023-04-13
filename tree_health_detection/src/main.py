@@ -11,7 +11,6 @@ import comet_ml
 import cv2
 import geopandas as gpd
 import laspy
-import matplotlib.pyplot as plt
 import numpy as np
 import os
 import pandas as pd
@@ -24,7 +23,13 @@ from tree_health_detection.src import train_val_t as tvt
 from tree_health_detection.src.spectral_attention import *
 from tree_health_detection.src.utils import *
 
-def __main__(get_clips = False):
+def __main__(get_clips = False, noGUI = True):
+    if noGUI:
+        import matplotlib
+        matplotlib.use('Agg')
+        
+    import matplotlib.pyplot as plt
+
     stem_positions = gpd.read_file("/home/smarconi/Documents/GitHub/Macrosystems_analysis/Data/geolocations/SERC/field.shp")
     hyperspectral_tile = '/home/smarconi/Documents/DAT_for_health/SERC/SERC/HSI.tif'
     rgb_tile = '/home/smarconi/Documents/DAT_for_health/SERC/SERC/2021_SERC_5_364000_4305000_image.tif'
@@ -115,7 +120,7 @@ def __main__(get_clips = False):
         print(f"Epoch: {epoch+1}/{num_epochs}, Train Loss: {train_loss:.4f}, Train Accuracy: {train_accuracy:.4f}, Val Loss: {val_loss:.4f}, Val Accuracy: {val_accuracy:.4f}")
 
     # Testing the model
-    true_labels, predicted_labels = tvt.test(model, test_loader, device, experiment)
+    true_labels, predicted_labels = tvt.test(model, test_loader, device, experiment, noGUI)
 
     # Calculate the confusion matrix
     conf_matrix = confusion_matrix(true_labels, predicted_labels)
