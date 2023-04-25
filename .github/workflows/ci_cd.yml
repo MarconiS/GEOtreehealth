@@ -31,10 +31,18 @@ jobs:
         python -m pip install flake8 pytest
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
         python -m pip install . --upgrade
+
+    - name: Lint with flake8
+      run: |
+        ${{ matrix.venv_activate }}
+        # stop the build if there are Python syntax errors or undefined names
+        flake8 ./GEOtreehealth --count --show-source --statistics
+        yapf -d --recursive ./GEOtreehealth --style=.style.yapf 2>&1
+
     - name: Test with pytest
       run: |
         ${{ matrix.venv_activate }}
-        pytest -v -k "not (test_retrieve_vst_dat or test_load_by_product)" --cov=./neonwranglerpy --cov-report=xml
+        pytest -v -k "not (test_retrieve_vst_dat or test_load_by_product)" --cov=./GEOtreehealth --cov-report=xml
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v1
       if: matrix.os == 'ubuntu-20.04' && matrix.python-version == '3.8' && matrix.r-version == 'release'
