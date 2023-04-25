@@ -7,6 +7,8 @@ from torch.utils.data import DataLoader, random_split
 from torchvision import datasets, transforms
 from torchvision.utils import save_image
 import os
+from tree_health_detection.src.utils import plot_validation_images
+#import matplotlib.pyplot as plt
 
 def train(model, dataloader, criterion, optimizer, device, experiment):
     model.train()
@@ -14,31 +16,13 @@ def train(model, dataloader, criterion, optimizer, device, experiment):
     correct = 0
     total = 0
 
-    for batch_idx, data in enumerate(dataloader):
-        rgb, hs, lidar, labels = data
-        rgb, hs, lidar, labels = rgb.to(device), hs.to(device), lidar.to(device), labels.to(device)
-
-        # Log images to Comet.ml
-        if batch_idx % 10 == 0:  # Log every 10th batch
-            img_dir = "temp_images"
-            os.makedirs(img_dir, exist_ok=True)
-
-            for i in range(min(3, rgb.size(0))):  # Log 3 images per batch
-                # Save and log RGB images
-                save_image(rgb[i].cpu(), f"{img_dir}/rgb_{batch_idx}_{i}.png")
-                experiment.log_image(f"{img_dir}/rgb_{batch_idx}_{i}.png", step=batch_idx, image_channels="first")
-
-                # Save and log HSI images
-                save_image(hs[i].cpu(), f"{img_dir}/hsi_{batch_idx}_{i}.png")
-                experiment.log_image(f"{img_dir}/hsi_{batch_idx}_{i}.png", step=batch_idx, image_channels="first")
-
-                # Save and log LiDAR images
-                save_image(lidar[i].cpu(), f"{img_dir}/lidar_{batch_idx}_{i}.png")
-                experiment.log_image(f"{img_dir}/lidar_{batch_idx}_{i}.png", step=batch_idx, image_channels="first")
-
-            # Clean up the temporary images directory
-            for file in os.listdir(img_dir):
-                os.remove(os.path.join(img_dir, file))
+    for batch_idx, (rgb, hs, lidar, labels) in enumerate(dataloader):
+        # Pass the LiDAR data to the model one at a time
+        rgb, hs, labels = rgb.float().to(device), hs.float().to(device), labels.to(device)
+        
+        # Convert lidar data to PyTorch tensors and move to device
+        lidar = [l.float().to(device) for l in lidar]
+        rgb, hs, labels = rgb.to(device), hs.to(device), labels.to(device)
 
         # Train the model
         optimizer.zero_grad()
@@ -70,7 +54,8 @@ def validate(model, dataloader, criterion, device, experiment):
     with torch.no_grad():
         for data in dataloader:
             rgb, hs, lidar, labels = data
-            rgb, hs, lidar, labels = rgb.to(device), hs.to(device), lidar.to(device), labels.to(device)
+            rgb, hs, labels =  rgb.float().to(device), hs.float().to(device), labels.to(device)
+            lidar = [l.float().to(device) for l in lidar]
 
             outputs = model(rgb, hs, lidar)
             loss = criterion(outputs, labels)
@@ -90,15 +75,23 @@ def validate(model, dataloader, criterion, device, experiment):
 
 
 
-def test(model, dataloader, device):
+def test(model, dataloader, device, experiment, noGUI = True, bands_to_plot = [18,56,135]):
+    #make sure you can plot tests
+    if noGUI:
+        import matplotlib
+        matplotlib.use('Agg')
+        
+    import matplotlib.pyplot as plt
     model.eval()
     true_labels = []
     predicted_labels = []
+    logged_images = 0
 
     with torch.no_grad():
         for data in dataloader:
             rgb, hs, lidar, labels = data
-            rgb, hs, lidar, labels = rgb.to(device), hs.to(device), lidar.to(device), labels.to(device)
+            rgb, hs, labels = rgb.float().to(device), hs.float().to(device), labels.to(device)
+            lidar = [l.float().to(device) for l in lidar]
 
             outputs = model(rgb, hs, lidar)
             _, predicted = outputs.max(1)
@@ -106,5 +99,24 @@ def test(model, dataloader, device):
             true_labels.extend(labels.cpu().numpy())
             predicted_labels.extend(predicted.cpu().numpy())
 
-    return true_labels, predicted_labels
+            # Log images and predictions
+            sampling_rate =5
+            if logged_images % sampling_rate == 0:
+                for i in range(len(rgb)):
+                    # Convert tensors to numpy arrays and transpose the axes
+                    rgb_np = rgb[i].cpu().numpy().transpose(1, 2, 0)
+                    # TODO retro
+                    hs_np = hs[i].cpu().numpy()[bands_to_plot]
 
+                    # Normalize to [0, 1] range for floats
+                    rgb_np = (rgb_np - rgb_np.min()) / (rgb_np.max() - rgb_np.min())
+
+                    # sepect 3 bands and normalize hs
+                    hs_np = (hs_np - hs_np.min()) / (hs_np.max() - hs_np.min())
+
+                    # Plot and log images
+                    fig = plot_validation_images([rgb_np, hs_np], [f"True: {true_labels[-1]}, Predicted: {predicted_labels[-1]}"] * 2, noGUI, cmap="gray" if hs_np.ndim == 2 else None)
+                    experiment.log_figure("Test Images", fig)
+                    plt.close(fig)
+
+    return true_labels, predicted_labels
