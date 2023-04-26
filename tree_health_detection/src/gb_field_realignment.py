@@ -44,8 +44,8 @@ def gb_field_realignment(outdir, gdf_field, gdf_reference):
     # Initialize the base models
     gbm_lat = GradientBoostingRegressor(n_estimators=100, learning_rate=0.1, max_depth=3, random_state=42)
     gbm_lon = GradientBoostingRegressor(n_estimators=100, learning_rate=0.1, max_depth=3, random_state=42)
-    rf_lat = RandomForestRegressor(n_estimators=100, max_depth=None, random_state=42)
-    rf_lon = RandomForestRegressor(n_estimators=100, max_depth=None, random_state=42)
+    #rf_lat = RandomForestRegressor(n_estimators=100, max_depth=None, random_state=42)
+    #rf_lon = RandomForestRegressor(n_estimators=100, max_depth=None, random_state=42)
 
     # Initialize the StackingRegressor
     stacking_lat = StackingRegressor(estimators=[('gbm_lat', gbm_lat)], final_estimator=LinearRegression())
