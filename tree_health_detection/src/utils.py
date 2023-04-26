@@ -286,3 +286,23 @@ def plot_validation_images(images, titles, noGUI = True, cmap=None):
         ax.set_title(title)
         ax.axis("off")
     return fig
+
+def tensor_memory(tensor):
+    return tensor.element_size() * tensor.nelement()
+
+
+def check_among_us():
+    memory_usage = {}
+    for name, var in locals().items():
+        if torch.is_tensor(var) and var.is_cuda:
+            memory_usage[name] = tensor_memory(var)
+
+    for name, var in locals().items():
+        if torch.is_tensor(var) and var.is_cuda:
+            memory_usage[name] = tensor_memory(var)
+
+    sorted_memory_usage = sorted(memory_usage.items(), key=lambda x: x[1], reverse=True)
+
+    for name, mem in sorted_memory_usage:
+        print(f"{name}: {mem} bytes")
+
