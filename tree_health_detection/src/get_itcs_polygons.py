@@ -80,10 +80,23 @@ def mask_to_polygons(mask, individual_point):
 
 
 def mask_to_delineation(mask):
+
     labeled_mask = label(mask, connectivity=1)
+    labeled_mask=labeled_mask[0,:,:]
     #labeled_mask = labeled_mask.astype(np.uint16)
     # Create a dictionary with as many values as unique values in the labeled mask
     label_to_category = {label: category for label, category in zip(np.unique(labeled_mask), range(0, np.unique(labeled_mask).shape[0]))}
+
+    #to speed up, clip the labelled mask to the bounding box around non-zero values
+    #get the bounding box
+    non_zero_indices = np.nonzero(labeled_mask)
+    min_x = max(np.min(non_zero_indices[0])-1,0)
+    max_x = min(np.max(non_zero_indices[0])+1, labeled_mask.shape[0])
+    min_y = max(np.min(non_zero_indices[1])-1,0)
+    max_y = min(np.max(non_zero_indices[1])+1, labeled_mask.shape[0])
+    #clip the labelled mask
+    labeled_mask = labeled_mask[min_x:max_x, min_y:max_y]
+    #get the category mask
 
     category_mask = np.vectorize(label_to_category.get)(labeled_mask)
     
@@ -99,7 +112,7 @@ def mask_to_delineation(mask):
         # Convert binary_mask to 8-bit single-channel image
         binary_mask = (binary_mask * 255).astype(np.uint8)
         # Find contours of the binary mask
-        contours, _ = cv2.findContours(binary_mask[0,:,:], cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         #skip if does not have enough dimensions
         if contours[0].shape[0] < 3:
@@ -109,6 +122,9 @@ def mask_to_delineation(mask):
             # Simplify the contour to a polygon
             poly = Polygon(shell=contour.squeeze())
             polygons.append(poly)
+
+        # shift polygons coordinates to the position before clipping labelled mask
+        polygons = [translate(poly, xoff=min_x, yoff=min_y) for poly in polygons]
 
     return polygons
 
@@ -121,6 +137,7 @@ def predict_tree_crowns(batch, input_points, neighbors = 10,
                         sam_checkpoint = "../tree_mask_delineation/SAM/checkpoints/sam_vit_h_4b8939.pth",
                         model_type = "vit_h"):
 
+    from tree_health_detection.src import get_itcs_polygons
 
     batch = np.moveaxis(batch, 0, -1)
     original_shape = batch.shape
@@ -237,8 +254,7 @@ def predict_tree_crowns(batch, input_points, neighbors = 10,
 
                 # Append the temporary GeoDataFrame to the main GeoDataFrame
                 crown_mask = pd.concat([crown_mask, gdf_temp], ignore_index=True)
-                crown_scores.append(scores)
-                crown_logits.append(logits)
+
 
     if input_boxes is None or mode == 'only_points':# and onnx_model_path is None:
         #loop through each stem point, make a prediction, and save the prediction
