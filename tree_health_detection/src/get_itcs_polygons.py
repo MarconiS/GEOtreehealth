@@ -162,9 +162,9 @@ def mask_to_delineation(mask):
 
 # sam_checkpoint = "../tree_mask_delineation/SAM/checkpoints/sam_vit_h_4b8939.pth"
 # Define a function to make predictions of tree crown polygons using SAM
-def predict_tree_crowns(batch, input_points, neighbors = 10, 
+def predict_tree_crowns(batch, input_points, neighbors = 5, 
                         input_boxes = None, point_type='random', 
-                        onnx_model_path = None,  rescale_to = 1024, mode = 'bbox',
+                        onnx_model_path = None,  rescale_to = None, mode = 'bbox',
                         sam_checkpoint = "../tree_mask_delineation/SAM/checkpoints/sam_vit_h_4b8939.pth",
                         model_type = "vit_h"):
 
@@ -227,33 +227,34 @@ def predict_tree_crowns(batch, input_points, neighbors = 10,
         masks = masks.cpu().numpy()
         scores = scores.cpu().numpy()
         logits = logits.cpu().numpy()
+        torch.cuda.empty_cache()    
         crown_scores.append(scores)
         crown_logits.append(logits)
         crown_masks.append(masks)
 
-    # loop through the masks, polygonize their raster, and append them into a geopandas dataframe
-    for msks in range(len(crown_masks)):
-        for it in range(crown_masks[msks].shape[0]):
-            #pick the mask with the highest score
-            mask = crown_masks[msks][it,0,:,:]
-            # Find the indices of the True values
-            true_indices = np.argwhere(mask)
-            #skip empty masks
-            if true_indices.shape[0] < 3:
-                continue
-            # Calculate the convex hull
-            polygons = mask_to_delineation(mask)
-            #likewise, if polygon is empty, skip
-            if len(polygons) == 0:
-                continue    
+        # loop through the masks, polygonize their raster, and append them into a geopandas dataframe
+        for msks in range(len(crown_masks)):
+            for it in range(crown_masks[msks].shape[0]):
+                #pick the mask with the highest score
+                mask = crown_masks[msks][it,0,:,:]
+                # Find the indices of the True values
+                true_indices = np.argwhere(mask)
+                #skip empty masks
+                if true_indices.shape[0] < 3:
+                    continue
+                # Calculate the convex hull
+                polygons = mask_to_delineation(mask)
+                #likewise, if polygon is empty, skip
+                if len(polygons) == 0:
+                    continue    
 
-            # Create a GeoDataFrame and append the polygon
-            gdf_temp = gpd.GeoDataFrame(geometry=[polygons[0]], columns=["geometry"])
-            gdf_temp["score"] = crown_scores[msks][it]
-            gdf_temp["point_id"] = str(msks)+'_'+str(it)
+                # Create a GeoDataFrame and append the polygon
+                gdf_temp = gpd.GeoDataFrame(geometry=[polygons[0]], columns=["geometry"])
+                gdf_temp["score"] = crown_scores[msks][it]
+                gdf_temp["point_id"] = str(msks)+'_'+str(it)
 
-            # Append the temporary GeoDataFrame to the main GeoDataFrame
-            crown_mask = pd.concat([crown_mask, gdf_temp], ignore_index=True)
+                # Append the temporary GeoDataFrame to the main GeoDataFrame
+                crown_mask = pd.concat([crown_mask, gdf_temp], ignore_index=True)
 
 
     if input_boxes is None or mode == 'only_points':# and onnx_model_path is None:
@@ -270,20 +271,25 @@ def predict_tree_crowns(batch, input_points, neighbors = 10,
             # Find the indices of the 10 closest rows
                 closest_indices = np.argpartition(distances, neighbors+1)[:neighbors+1]  # We use 11 because the row itself is included
             elif point_type == "random":
-                closest_indices = np.random.choice(np.arange(0, input_point.shape[0]), neighbors+1, replace=True)
+                #pick a random sample of points, making sure that none is the target point
+                closest_indices = np.random.choice(np.delete(np.arange(input_point.shape[0]), it), neighbors, replace=False)
+
             # Subset the array to the ith row and the 10 closest rows
-            subset_point = input_point[closest_indices]
+            subset_point = input_point[closest_indices].astype(np.int8)
             subset_label = input_label[closest_indices]
             subset_label = subset_label.astype(np.int8)
-
+            #append subset_point with the target point
+            subset_point = np.vstack((subset_point, target_itc.astype(np.int8)))
+            subset_label = np.append(subset_label, 1)
             masks, scores, logits = predictor.predict(
                 point_coords=subset_point,
                 point_labels=subset_label,
                 multimask_output=False,
             )
             #pick the mask with the highest score
-            masks = masks[scores.argmax()]
-            scores = scores[scores.argmax()]
+            if len(masks) > 1:
+                masks = masks[scores.argmax()]
+                scores = scores[scores.argmax()]
             # Find the indices of the True values
             true_indices = np.argwhere(masks)
             #skip empty masks
@@ -292,12 +298,16 @@ def predict_tree_crowns(batch, input_points, neighbors = 10,
 
             # Calculate the convex hull
             individual_point = Point(input_point[it])
-            polygons = mask_to_polygons(masks, individual_point)
+            polygons = mask_to_delineation(masks)
+            #pick the polygon that intercepts with individual point
+            polygons = [poly for poly in polygons if poly.intersects(individual_point)]
+            if len(polygons) ==0:
+                continue
 
             # Create a GeoDataFrame and append the polygon
-            gdf_temp = gpd.GeoDataFrame(geometry=[polygons], columns=["geometry"])
+            gdf_temp = gpd.GeoDataFrame(geometry=[polygons[0]], columns=["geometry"])
             gdf_temp["score"] = scores
-            gdf_temp["stemTag"] = input_crowns.iloc[it]
+            gdf_temp["StemTag"] = input_crowns.iloc[it]
 
             # Append the temporary GeoDataFrame to the main GeoDataFrame
             crown_mask = pd.concat([crown_mask, gdf_temp], ignore_index=True)
@@ -367,90 +377,96 @@ def split_image(image_file, hsi_img, itcs, bbox,  batch_size=40):
         resolution =src.transform[0]
         batch_size_ = int(batch_size / resolution)
         # Initialize lists to store the raster batches and clipped GeoDataFrames
-        raster_batches = []
-        hsi_batches = []
-        itcs_batches = []
-        affines = []
-        itcs_boxes = []
-        dbox= []
-        # Loop through the rows and columns of the image
-        for i in range(0, height, batch_size_):
-            for j in range(0, width, batch_size_):
-                # Define a window for the current batch
-                window = Window(col_off=j, row_off=i, width=batch_size_, height=batch_size_)
-                # Read the batch from the raster image
+        
+    raster_batches = []
+    hsi_batches = []
+    itcs_batches = []
+    affines = []
+    itcs_boxes = []
+    dbox= []
+    # Loop through the rows and columns of the image
+    for i in range(0, height, batch_size_):
+        for j in range(0, width, batch_size_):
+            # Define a window for the current batch
+            window = Window(col_off=j, row_off=i, width=batch_size_, height=batch_size_)
+
+            # Read the batch from the raster image
+            with rasterio.open(image_file) as src:
                 batch = src.read(window=window)
                 # Append the raster batch to the list
                 raster_batches.append(batch)
-                 
                 # Convert the window to geospatial coordinates
                 left, top = src.xy(i, j)
                 right, bottom = src.xy(i+batch_size_, j+batch_size_)
                 batch_bounds = box(left, bottom, right, top)
 
                 #rasterio load hsi_img only within the bounds of batch_bounds
-                with rasterio.open(hsi_img) as hsi: 
-                    resolution_hsi = hsi.transform[0]
-                    #modify window to account for hsi resolution
-                    resolution_factor =  resolution_hsi /resolution 
-                    batch_size_hsi = round(batch_size_ / resolution_factor)
-                    hsi_height, hsi_width = hsi.shape
-                    window_hsi = Window(col_off=j/resolution_factor, row_off=i/resolution_factor, width=batch_size_hsi, height=batch_size_hsi)
-                    hsi_batch = hsi.read(window=window_hsi)
+            with rasterio.open(hsi_img) as hsi: 
+                resolution_hsi = hsi.transform[0]
+                #modify window to account for hsi resolution
+                resolution_factor =  resolution_hsi /resolution 
+                batch_size_hsi = round(batch_size_ / resolution_factor)
+                hsi_height, hsi_width = hsi.shape
+                window_hsi = Window(col_off=j/resolution_factor, row_off=i/resolution_factor, width=batch_size_hsi, height=batch_size_hsi)
+                hsi_batch = hsi.read(window=window_hsi)
 
-                # upscale hsi_batch to the same size as batch
-                #hsi_batch = upscale_array(hsi_batch, batch, resolution_hsi, resolution)
+            # upscale hsi_batch to the same size as batch
+            #hsi_batch = upscale_array(hsi_batch, batch, resolution_hsi, resolution)
 
-                hsi_batches.append(hsi_batch)
+            hsi_batches.append(hsi_batch)
 
-                # Clip the GeoDataFrame using the batch bounds
-                itcs_clipped = gpd.clip(itcs, batch_bounds)
+            # Clip the GeoDataFrame using the batch bounds
+            itcs_clipped = gpd.clip(itcs, batch_bounds)
 
-                # Transform the coordinates relative to the raster batch's origin
-                itcs_clipped["geometry"] = itcs_clipped["geometry"].apply(
-                    transform_coordinates, x_offset=left, y_offset=bottom
-                )
-                bbox_clipped = bbox
-                #from bboxes, clip only those whose xmin, ymin, xmax, ymax fit within the batch bounds
-                bbox_clipped = gpd.clip(bbox_clipped, batch_bounds)
+            # Transform the coordinates relative to the raster batch's origin
+            itcs_clipped["geometry"] = itcs_clipped["geometry"].apply(
+                transform_coordinates, x_offset=left, y_offset=bottom
+            )
+            bbox_clipped = bbox
+            #from bboxes, clip only those whose xmin, ymin, xmax, ymax fit within the batch bounds
+            bbox_clipped = gpd.clip(bbox_clipped, batch_bounds)
 
 
-                #remove boxes that are LINESTRING or POINT
-                bbox_clipped = bbox_clipped[bbox_clipped.geometry.type == 'Polygon']
+            #remove boxes that are LINESTRING or POINT
+            bbox_clipped = bbox_clipped[bbox_clipped.geometry.type == 'Polygon']
 
-                # Create a new DataFrame with stemTag, x, and y columns
-                itcs_df = pd.DataFrame(
-                    {
-                        "StemTag": itcs_clipped["StemTag"],
-                        "x": itcs_clipped["geometry"].x,
-                        "y": itcs_clipped["geometry"].y,
-                    }
-                )
-                # Create a new DataFrame with label, x, and y columns from bbox_clipped
-                # Extract the bounding box coordinates for each polygon
-                resolution_factor = resolution/ resolution_hsi
+            # Create a new DataFrame with stemTag, x, and y columns
+            itcs_df = pd.DataFrame(
+                {
+                    "StemTag": itcs_clipped["StemTag"],
+                    "x": itcs_clipped["geometry"].x,
+                    "y": itcs_clipped["geometry"].y,
+                }
+            )
+            # Create a new DataFrame with label, x, and y columns from bbox_clipped
+            # Extract the bounding box coordinates for each polygon
+            resolution_factor = resolution/ resolution_hsi
 
-                tmp_bx = []
-                left, bottom, right, top =  batch_bounds.bounds
-                for rows in range(bbox_clipped.shape[0]):
-                    #from the polygon geometry, get xmin, xmax, ymin, ymax relative to image_rgb left, bottom, right, top
+            tmp_bx = []
+            left, bottom, right, top =  batch_bounds.bounds
+            for rows in range(bbox_clipped.shape[0]):
+                #from the polygon geometry, get xmin, xmax, ymin, ymax relative to image_rgb left, bottom, right, top
 
-                    bounds = bbox_clipped.geometry.bounds.iloc[rows]
-                    bbox_clipped['xmin'] = (bounds['minx']-left) 
-                    bbox_clipped['ymin'] = bounds['miny']-bottom
-                    bbox_clipped['xmax'] = bounds['maxx']-left
-                    bbox_clipped['ymax'] = bounds['maxy']-bottom
-                    tmp_bx.append([bbox_clipped['xmin'], bbox_clipped['ymin'], bbox_clipped['xmax'], bbox_clipped['ymax']])
+                bounds = bbox_clipped.geometry.bounds.iloc[rows]
+                bbox_clipped['xmin'] = bounds['minx']-left 
+                bbox_clipped['ymin'] = bounds['miny']-bottom
+                bbox_clipped['xmax'] = bounds['maxx']-left
+                bbox_clipped['ymax'] = bounds['maxy']-bottom
+                bleft = bbox_clipped['xmin'].values[0] 
+                bbottom = bbox_clipped['ymin'].values[0] 
+                bright = bbox_clipped['xmax'].values[0] 
+                btop = bbox_clipped['ymax'].values[0]
+                tmp_bx.append([bleft, bbottom, bright, btop])
 
-                tmp_bx = np.array(tmp_bx)
+            tmp_bx = np.array(tmp_bx)
 
-                # Append the DataFrame to the list
-                itcs_batches.append(itcs_df)
-                affines.append(src.window_transform(window))
-                itcs_boxes.append(tmp_bx)
-                dbox.append(bbox_clipped)
+            # Append the DataFrame to the list
+            itcs_batches.append(itcs_df)
+            affines.append(src.window_transform(window))
+            itcs_boxes.append(tmp_bx)
+            dbox.append(bbox_clipped)
     # Return the lists of raster batches and clipped GeoDataFrames
-    return raster_batches, hsi_batches, itcs_batches, itcs_boxes, affines, dbox
+    return raster_batches, hsi_batches, itcs_batches, itcs_boxes, affines
 
 
 

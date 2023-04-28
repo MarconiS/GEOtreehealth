@@ -73,9 +73,7 @@ laz_path = 'imagery/LiDAR.laz'
 # check if the tree_tops file exists. if not, launch get_tree_tops
 def build_data_schema(folder, stem_path,rgb_path, hsi_path, laz_path):
 
-    #reload dependencies
-    reload(delineation_utils)
-    reload(get_itcs_polygons)
+
 
     if os.path.exists(os.path.join(folder,stem_path)):
         itcs = gpd.read_file(os.path.join(folder+stem_path))
@@ -92,8 +90,6 @@ def build_data_schema(folder, stem_path,rgb_path, hsi_path, laz_path):
     #get tree bounding boxes with deepForest for SAM
     import deepforest
     bbox = delineation_utils.extract_boxes(folder+rgb_path)
-    torch.cuda.empty_cache()    
-
     #use bbox xmin,ymin,xmax,ymax to make corners of bounding box polygons
     bbox['geometry'] = bbox.apply(lambda row: delineation_utils.create_bounding_box(row, 1/rgb_transform[0]), axis=1)
     x_offset, y_offset = rgb_transform[2], rgb_transform[5]
@@ -112,21 +108,26 @@ def build_data_schema(folder, stem_path,rgb_path, hsi_path, laz_path):
     image_file = os.path.join(folder, rgb_path)
     hsi_img = os.path.join(folder, hsi_img)
     # Split the image into batches of 40x40m
-    batch_size = 40
+    batch_size = 94
     #image_file, hsi_img, itcs, bbox,  batch_size=40
     raster_batches, raster_hsi_batches, itcs_batches, itcs_boxes, affine = get_itcs_polygons.split_image(image_file, 
                                 hsi_img, itcs, bbox, batch_size)
 
+    #reload dependencies
+    reload(delineation_utils)
+    reload(get_itcs_polygons)
     # Make predictions of tree crown polygons using SAM
+    tmp = raster_hsi_batches[:1]
     for(i, batch_) in enumerate(raster_hsi_batches):
         #skip empty batches
         if itcs_boxes[i].shape[0] == 0: 
             continue
         
-        #predictions = effe.copy()
+        torch.cuda.empty_cache()    
         # Make predictions of tree crown polygons using SAM
         predictions, _, _ = get_itcs_polygons.predict_tree_crowns(batch=batch_[:3,:,:], input_points=itcs_batches[i], rescale_to =400, 
-                                                                  input_boxes = itcs_boxes[i], neighbors=3, point_type = "euclidian") 
+               neighbors=200,  mode = 'only_points', point_type = "random", input_boxes = itcs_boxes[i] )
+        torch.cuda.empty_cache()    
         # Apply the translation to the geometries in the GeoDataFrame
         x_offset, y_offset = affine[i][2], affine[i][5]
         y_offset = y_offset - batch_size
