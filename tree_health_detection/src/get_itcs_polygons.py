@@ -1,4 +1,23 @@
 
+import geopandas as gpd
+import numpy as np
+import os
+from rasterio.mask import mask
+import geopandas as gpd
+import pandas as pd
+import rasterio
+from rasterio.windows import Window
+from shapely.geometry import box
+from shapely.geometry import box, Point, MultiPoint, Polygon
+import imageio
+import deepforest
+from PIL import Image
+from scipy.ndimage import zoom
+import torch
+import imageio
+import rasterio
+from shapely.affinity import translate
+
 # Import the necessary libraries
 import os
 import rasterio
@@ -39,6 +58,16 @@ import geopandas as gpd
 import pandas as pd
 from skimage.transform import resize
 from skimage.measure import label
+import geopandas as gpd
+import pandas as pd
+import rasterio
+from rasterio.windows import Window
+from shapely.geometry import box
+from shapely.geometry import box, Point, MultiPoint, Polygon
+import imageio
+import deepforest
+from PIL import Image
+from scipy.ndimage import zoom
 
 def mask_to_polygons(mask, individual_point):
     # Find contours in the mask
@@ -82,20 +111,22 @@ def mask_to_polygons(mask, individual_point):
 def mask_to_delineation(mask):
 
     labeled_mask = label(mask, connectivity=1)
-    labeled_mask=labeled_mask[0,:,:]
+    # if 3d flatten to 2d
+    if len(labeled_mask.shape) == 3:
+        labeled_mask=labeled_mask[0,:,:]
     #labeled_mask = labeled_mask.astype(np.uint16)
     # Create a dictionary with as many values as unique values in the labeled mask
     label_to_category = {label: category for label, category in zip(np.unique(labeled_mask), range(0, np.unique(labeled_mask).shape[0]))}
 
     #to speed up, clip the labelled mask to the bounding box around non-zero values
     #get the bounding box
-    non_zero_indices = np.nonzero(labeled_mask)
-    min_x = max(np.min(non_zero_indices[0])-1,0)
-    max_x = min(np.max(non_zero_indices[0])+1, labeled_mask.shape[0])
-    min_y = max(np.min(non_zero_indices[1])-1,0)
-    max_y = min(np.max(non_zero_indices[1])+1, labeled_mask.shape[0])
+    #non_zero_indices = np.nonzero(labeled_mask)
+    #min_x = max(np.min(non_zero_indices[0])-1,0)
+    #max_x = min(np.max(non_zero_indices[0])+1, labeled_mask.shape[0])
+    #min_y = max(np.min(non_zero_indices[1])-1,0)
+    #max_y = min(np.max(non_zero_indices[1])+1, labeled_mask.shape[0])
     #clip the labelled mask
-    labeled_mask = labeled_mask[min_x:max_x, min_y:max_y]
+    #labeled_mask = labeled_mask[min_x:max_x, min_y:max_y]
     #get the category mask
 
     category_mask = np.vectorize(label_to_category.get)(labeled_mask)
@@ -124,7 +155,7 @@ def mask_to_delineation(mask):
             polygons.append(poly)
 
         # shift polygons coordinates to the position before clipping labelled mask
-        polygons = [translate(poly, xoff=min_x, yoff=min_y) for poly in polygons]
+        #polygons = [translate(poly, xoff=min_x, yoff=min_y) for poly in polygons]
 
     return polygons
 
@@ -133,15 +164,20 @@ def mask_to_delineation(mask):
 # Define a function to make predictions of tree crown polygons using SAM
 def predict_tree_crowns(batch, input_points, neighbors = 10, 
                         input_boxes = None, point_type='random', 
-                        onnx_model_path = None,  rescale_to = None, mode = 'bbox',
+                        onnx_model_path = None,  rescale_to = 1024, mode = 'bbox',
                         sam_checkpoint = "../tree_mask_delineation/SAM/checkpoints/sam_vit_h_4b8939.pth",
                         model_type = "vit_h"):
 
-    from tree_health_detection.src import get_itcs_polygons
-
+    from tree_health_detection.src.get_itcs_polygons import mask_to_delineation
+    from skimage import exposure
     batch = np.moveaxis(batch, 0, -1)
+    #age = Image.fromarray(batch)
+    #age.save('output.png')
     original_shape = batch.shape
 
+    #change input boxes values into integers
+    if input_boxes is not None:
+        input_boxes = input_boxes.astype(int)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
@@ -153,13 +189,20 @@ def predict_tree_crowns(batch, input_points, neighbors = 10,
         batch = resize(batch, (rescale_to, rescale_to), order=3, mode='constant', cval=0, clip=True, preserve_range=True)
         input_points['x'] = input_points['x'] * rescale_to / original_shape[1]
         input_points['y'] = input_points['y'] * rescale_to / original_shape[0]
+        #rescale xmin, ymin, xmax, ymax of input_boxes
+        if input_boxes is not None:
+            input_boxes[:,0] = input_boxes[:,0] * rescale_to / original_shape[1]
+            input_boxes[:,1] = input_boxes[:,1] * rescale_to / original_shape[0]
+            input_boxes[:,2] = input_boxes[:,2] * rescale_to / original_shape[1]
+            input_boxes[:,3] = input_boxes[:,3] * rescale_to / original_shape[0]
 
-    # linstretch the image, normalize it to 0, 255 and convert to int8
-    batch = np.uint8(255 * (batch - batch.min()) / (batch.max() - batch.min()))
+    # linear stretch of the batch image, between 0 and 255
+    batch = exposure.rescale_intensity(batch, out_range=(0, 255))
+    batch =  np.array(batch, dtype=np.uint8)
     sam.to(device=device)
     predictor = SamPredictor(sam)
     #flip rasterio to be h,w, channels
-    predictor.set_image(batch)
+    predictor.set_image(np.array(batch))
 
     #turn stem points into a numpy array
     input_point = np.column_stack((input_points['x'], input_points['y']))
@@ -171,89 +214,46 @@ def predict_tree_crowns(batch, input_points, neighbors = 10,
     if input_boxes is not None and mode == 'bbox':# and onnx_model_path is None:
         # this part may be a GPU bottleneck. Better divide the boxes into batches of 1000 max
         # divede the boxes into batches of 1000 max if they are more than 1000
-        if  input_boxes.shape[0] > 100:
-            n_batches = int(input_boxes.shape[0] / 100)
-            for i in range(n_batches):
-                #transform the boxes into a torch.tensor
-                transformed_boxes_batch = input_boxes[i*100:(i+1)*100, :]
-                transformed_boxes_batch = torch.tensor(transformed_boxes_batch, device=predictor.device)
-                transpformed_boxes_batch = predictor.transform.apply_boxes_torch(transformed_boxes_batch, batch.shape[:2])
-                masks,scores, logits = predictor.predict_torch(
-                    point_coords=None,
-                    point_labels=None,
-                    boxes=transformed_boxes_batch,
-                    multimask_output=False,
-                )
-                #free space from GPU
-                masks = masks.cpu().numpy()
-                scores = scores.cpu().numpy()
-                logits = logits.cpu().numpy()
-                #append batch results to the list
-                crown_masks.append(masks)
-                crown_scores.append(scores)
-                crown_logits.append(logits)
+        transformed_boxes_batch = input_boxes
+        transformed_boxes_batch = torch.tensor(transformed_boxes_batch, device=predictor.device)
+        transformed_boxes_batch = predictor.transform.apply_boxes_torch(transformed_boxes_batch, batch.shape[:2])
+        masks,scores, logits = predictor.predict_torch(
+            point_coords=None,
+            point_labels=None,
+            boxes=transformed_boxes_batch.int(),
+            multimask_output=False,
+        )
+        #free space from GPU
+        masks = masks.cpu().numpy()
+        scores = scores.cpu().numpy()
+        logits = logits.cpu().numpy()
+        crown_scores.append(scores)
+        crown_logits.append(logits)
+        crown_masks.append(masks)
 
-                del(transformed_boxes_batch, masks,scores, logits)
-                torch.cuda.empty_cache()
-            #predict the last batch
-            transformed_boxes_batch = input_boxes[(i+1)*100:, :]
-            transformed_boxes_batch = torch.tensor(transformed_boxes_batch, device=predictor.device)
-            transformed_boxes_batch = predictor.transform.apply_boxes_torch(transformed_boxes_batch, batch.shape[:2])
-            masks,scores, logits = predictor.predict_torch(
-                point_coords=None,
-                point_labels=None,
-                boxes=transformed_boxes_batch,
-                multimask_output=False,
-            )
-            #free space from GPU
-            masks = masks.cpu().numpy()
-            scores = scores.cpu().numpy()
-            logits = logits.cpu().numpy()
-            #append batch results to the list
-            crown_masks.append(masks)
-            crown_scores.append(scores)
-            crown_logits.append(logits)
-        else:
-            transformed_boxes_batch = input_boxes
-            transformed_boxes_batch = torch.tensor(transformed_boxes_batch, device=predictor.device)
-            transformed_boxes_batch = predictor.transform.apply_boxes_torch(transformed_boxes_batch, batch.shape[:2])
-            masks,scores, logits = predictor.predict_torch(
-                point_coords=None,
-                point_labels=None,
-                boxes=transformed_boxes_batch,
-                multimask_output=False,
-            )
-            #free space from GPU
-            masks = masks.cpu().numpy()
-            scores = scores.cpu().numpy()
-            logits = logits.cpu().numpy()
-            crown_scores.append(scores)
-            crown_logits.append(logits)
-            crown_masks.append(masks)
+    # loop through the masks, polygonize their raster, and append them into a geopandas dataframe
+    for msks in range(len(crown_masks)):
+        for it in range(crown_masks[msks].shape[0]):
+            #pick the mask with the highest score
+            mask = crown_masks[msks][it,0,:,:]
+            # Find the indices of the True values
+            true_indices = np.argwhere(mask)
+            #skip empty masks
+            if true_indices.shape[0] < 3:
+                continue
+            # Calculate the convex hull
+            polygons = mask_to_delineation(mask)
+            #likewise, if polygon is empty, skip
+            if len(polygons) == 0:
+                continue    
 
-        # loop through the masks, polygonize their raster, and append them into a geopandas dataframe
-        for msks in range(len(crown_masks)):
-            for it in range(crown_masks[msks].shape[0]):
-                #pick the mask with the highest score
-                mask = crown_masks[msks][it]
-                # Find the indices of the True values
-                true_indices = np.argwhere(mask)
-                #skip empty masks
-                if true_indices.shape[0] < 3:
-                    continue
-                # Calculate the convex hull
-                polygons = get_itcs_polygons.mask_to_delineation(mask)
-                #likewise, if polygon is empty, skip
-                if len(polygons) == 0:
-                    continue    
+            # Create a GeoDataFrame and append the polygon
+            gdf_temp = gpd.GeoDataFrame(geometry=[polygons[0]], columns=["geometry"])
+            gdf_temp["score"] = crown_scores[msks][it]
+            gdf_temp["point_id"] = str(msks)+'_'+str(it)
 
-                # Create a GeoDataFrame and append the polygon
-                gdf_temp = gpd.GeoDataFrame(geometry=[polygons[0]], columns=["geometry"])
-                gdf_temp["score"] = crown_scores[msks][it]
-                gdf_temp["point_id"] = str(msks)+'_'+str(it)
-
-                # Append the temporary GeoDataFrame to the main GeoDataFrame
-                crown_mask = pd.concat([crown_mask, gdf_temp], ignore_index=True)
+            # Append the temporary GeoDataFrame to the main GeoDataFrame
+            crown_mask = pd.concat([crown_mask, gdf_temp], ignore_index=True)
 
 
     if input_boxes is None or mode == 'only_points':# and onnx_model_path is None:
@@ -328,17 +328,6 @@ def save_predictions(predictions, output_path):
     gdf.to_file(output_path)
 
 
-import geopandas as gpd
-import pandas as pd
-import rasterio
-from rasterio.windows import Window
-from shapely.geometry import box
-from shapely.geometry import box, Point, MultiPoint, Polygon
-import imageio
-import deepforest
-from PIL import Image
-from scipy.ndimage import zoom
-
 def transform_coordinates(geometry, x_offset, y_offset):
     if geometry.type == "Point":
         return Point(geometry.x - x_offset, geometry.y - y_offset)
@@ -383,6 +372,7 @@ def split_image(image_file, hsi_img, itcs, bbox,  batch_size=40):
         itcs_batches = []
         affines = []
         itcs_boxes = []
+        dbox= []
         # Loop through the rows and columns of the image
         for i in range(0, height, batch_size_):
             for j in range(0, width, batch_size_):
@@ -404,11 +394,12 @@ def split_image(image_file, hsi_img, itcs, bbox,  batch_size=40):
                     #modify window to account for hsi resolution
                     resolution_factor =  resolution_hsi /resolution 
                     batch_size_hsi = round(batch_size_ / resolution_factor)
+                    hsi_height, hsi_width = hsi.shape
                     window_hsi = Window(col_off=j/resolution_factor, row_off=i/resolution_factor, width=batch_size_hsi, height=batch_size_hsi)
                     hsi_batch = hsi.read(window=window_hsi)
 
                 # upscale hsi_batch to the same size as batch
-                hsi_batch = upscale_array(hsi_batch, batch, resolution_hsi, resolution)
+                #hsi_batch = upscale_array(hsi_batch, batch, resolution_hsi, resolution)
 
                 hsi_batches.append(hsi_batch)
 
@@ -419,17 +410,14 @@ def split_image(image_file, hsi_img, itcs, bbox,  batch_size=40):
                 itcs_clipped["geometry"] = itcs_clipped["geometry"].apply(
                     transform_coordinates, x_offset=left, y_offset=bottom
                 )
-                
-                bbox_clipped = deepforest.utilities.annotations_to_shapefile(bbox, transform=src.transform, crs = src.crs)
+                bbox_clipped = bbox
                 #from bboxes, clip only those whose xmin, ymin, xmax, ymax fit within the batch bounds
                 bbox_clipped = gpd.clip(bbox_clipped, batch_bounds)
 
+
                 #remove boxes that are LINESTRING or POINT
                 bbox_clipped = bbox_clipped[bbox_clipped.geometry.type == 'Polygon']
-                # Transform the coordinates of each box polygin relative to the raster batch's origin
-                bbox_clipped["geometry"] = bbox_clipped["geometry"].apply(
-                                    transform_coordinates, x_offset=left, y_offset=bottom
-                                )
+
                 # Create a new DataFrame with stemTag, x, and y columns
                 itcs_df = pd.DataFrame(
                     {
@@ -440,11 +428,19 @@ def split_image(image_file, hsi_img, itcs, bbox,  batch_size=40):
                 )
                 # Create a new DataFrame with label, x, and y columns from bbox_clipped
                 # Extract the bounding box coordinates for each polygon
+                resolution_factor = resolution/ resolution_hsi
+
                 tmp_bx = []
-                for geometry in bbox_clipped.geometry:
-                    bounds = geometry.bounds  # Returns (minx, miny, maxx, maxy)
-                    left, bottom, right, top = bounds
-                    tmp_bx.append([left, bottom, right, top])
+                left, bottom, right, top =  batch_bounds.bounds
+                for rows in range(bbox_clipped.shape[0]):
+                    #from the polygon geometry, get xmin, xmax, ymin, ymax relative to image_rgb left, bottom, right, top
+
+                    bounds = bbox_clipped.geometry.bounds.iloc[rows]
+                    bbox_clipped['xmin'] = (bounds['minx']-left) 
+                    bbox_clipped['ymin'] = bounds['miny']-bottom
+                    bbox_clipped['xmax'] = bounds['maxx']-left
+                    bbox_clipped['ymax'] = bounds['maxy']-bottom
+                    tmp_bx.append([bbox_clipped['xmin'], bbox_clipped['ymin'], bbox_clipped['xmax'], bbox_clipped['ymax']])
 
                 tmp_bx = np.array(tmp_bx)
 
@@ -452,6 +448,14 @@ def split_image(image_file, hsi_img, itcs, bbox,  batch_size=40):
                 itcs_batches.append(itcs_df)
                 affines.append(src.window_transform(window))
                 itcs_boxes.append(tmp_bx)
+                dbox.append(bbox_clipped)
     # Return the lists of raster batches and clipped GeoDataFrames
-    return raster_batches, hsi_batches, itcs_batches, itcs_boxes, affines
+    return raster_batches, hsi_batches, itcs_batches, itcs_boxes, affines, dbox
+
+
+
+# merge bbox and tmp_bx, then subtract bbox from tmp_bx
+def get_bbox_diff(bbox_clipped, tmp_bx):
+    #subtract columnwise bbox_clipped from tmp_bx
+    bbox_diff = tmp_bx - bbox_clipped[['xmin', 'ymin', 'xmax', 'ymax']].values
 

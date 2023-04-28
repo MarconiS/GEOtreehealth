@@ -273,6 +273,7 @@ def split_dataset(rgb_data, hs_data, lidar_data, health_classes, stratify_1=None
     return (train_rgb, train_hs, train_lidar, train_labels), (val_rgb, val_hs, val_lidar, val_labels), (test_rgb, test_hs, test_lidar, test_labels)
 
 
+
 def plot_validation_images(images, titles, noGUI = True, cmap=None):
     if noGUI:
         import matplotlib
@@ -286,6 +287,7 @@ def plot_validation_images(images, titles, noGUI = True, cmap=None):
         ax.set_title(title)
         ax.axis("off")
     return fig
+
 
 def tensor_memory(tensor):
     return tensor.element_size() * tensor.nelement()
