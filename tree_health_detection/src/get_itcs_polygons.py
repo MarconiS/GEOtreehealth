@@ -163,10 +163,10 @@ def mask_to_delineation(mask):
 # sam_checkpoint = "../tree_mask_delineation/SAM/checkpoints/sam_vit_h_4b8939.pth"
 # Define a function to make predictions of tree crown polygons using SAM
 def predict_tree_crowns(batch, input_points, neighbors = 5, 
-                        input_boxes = None, point_type='random', 
+                        input_boxes = None, point_type='grid', 
                         onnx_model_path = None,  rescale_to = None, mode = 'bbox',
                         sam_checkpoint = "../tree_mask_delineation/SAM/checkpoints/sam_vit_h_4b8939.pth",
-                        model_type = "vit_h"):
+                        model_type = "vit_h", meters_between_points = 50, threshold_distance =50):
 
     from tree_health_detection.src.get_itcs_polygons import mask_to_delineation
     from skimage import exposure
@@ -181,6 +181,48 @@ def predict_tree_crowns(batch, input_points, neighbors = 5,
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
+
+    if onnx_model_path == None:
+        onnx_model_path = "tree_health_detection/tmp_data/sam_onnx_example.onnx"
+
+        onnx_model = SamOnnxModel(sam, return_single_mask=True)
+
+        dynamic_axes = {
+            "point_coords": {1: "num_points"},
+            "point_labels": {1: "num_points"},
+        }
+
+        embed_dim = sam.prompt_encoder.embed_dim
+        embed_size = sam.prompt_encoder.image_embedding_size
+        mask_input_size = [4 * x for x in embed_size]
+        dummy_inputs = {
+            "image_embeddings": torch.randn(1, embed_dim, *embed_size, dtype=torch.float).to('cpu'),
+            "point_coords": torch.randint(low=0, high=1024, size=(1, 5, 2), dtype=torch.float).to('cpu'),
+            "point_labels": torch.randint(low=0, high=4, size=(1, 5), dtype=torch.float).to('cpu'),
+            "mask_input": torch.randn(1, 1, *mask_input_size, dtype=torch.float).to('cpu'),
+            "has_mask_input": torch.tensor([1], dtype=torch.float).to('cpu'),
+            "orig_im_size": torch.tensor([1500, 2250], dtype=torch.float).to('cpu'),
+        }
+        output_names = ["masks", "iou_predictions", "low_res_masks"]
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=torch.jit.TracerWarning)
+            warnings.filterwarnings("ignore", category=UserWarning)
+            with open(onnx_model_path, "wb") as f:
+                torch.onnx.export(
+                    onnx_model,
+                    tuple(dummy_inputs.values()),
+                    f,
+                    export_params=True,
+                    verbose=False,
+                    opset_version=17,
+                    do_constant_folding=True,
+                    input_names=list(dummy_inputs.keys()),
+                    output_names=output_names,
+                    dynamic_axes=dynamic_axes,
+                )   
+        
+
 
     #neighbors must be the minimum between the total number of input_points and the argument neighbors
     neighbors = min(input_points.shape[0]-2, neighbors)
@@ -199,10 +241,13 @@ def predict_tree_crowns(batch, input_points, neighbors = 5,
     # linear stretch of the batch image, between 0 and 255
     batch = exposure.rescale_intensity(batch, out_range=(0, 255))
     batch =  np.array(batch, dtype=np.uint8)
+    ort_session = onnxruntime.InferenceSession(onnx_model_path)
+
     sam.to(device=device)
     predictor = SamPredictor(sam)
     #flip rasterio to be h,w, channels
     predictor.set_image(np.array(batch))
+    image_embedding = predictor.get_image_embedding().cpu().numpy()
 
     #turn stem points into a numpy array
     input_point = np.column_stack((input_points['x'], input_points['y']))
@@ -211,6 +256,7 @@ def predict_tree_crowns(batch, input_points, neighbors = 5,
     crown_scores=[]
     crown_logits=[]
     crown_masks = []
+
     if input_boxes is not None and mode == 'bbox':# and onnx_model_path is None:
         # this part may be a GPU bottleneck. Better divide the boxes into batches of 1000 max
         # divede the boxes into batches of 1000 max if they are more than 1000
@@ -263,42 +309,95 @@ def predict_tree_crowns(batch, input_points, neighbors = 5,
             #update input_label to be 0 everywhere except at position it       
             input_label = np.zeros(input_point.shape[0])
             input_label[it] = 1
-            target_itc = input_point[it]
+            target_itc = input_point[it].copy()
             # subset the input_points to be the current point and the 10 closest points
             # Calculate the Euclidean distance between the ith row and the other rows
             distances = np.linalg.norm(input_point - input_point[it], axis=1)
-            if point_type == "euclidian":
+            if point_type == "distance":
             # Find the indices of the 10 closest rows
                 closest_indices = np.argpartition(distances, neighbors+1)[:neighbors+1]  # We use 11 because the row itself is included
+            # find the 4 closest points one in each cardinal direction
+            elif point_type == "cardinal":
+                closest_indices = np.argpartition(distances, 4)[:4]
+            #pick a random sample of points, making sure that none is the target point
+            
             elif point_type == "random":
                 #pick a random sample of points, making sure that none is the target point
                 closest_indices = np.random.choice(np.delete(np.arange(input_point.shape[0]), it), neighbors, replace=False)
 
+            elif point_type == "grid":
+                #create a grid of points around the target point, that is within the bounds of the image
+                points = []
+                #loop through predefined distance between points
+                for i in range(-neighbors, neighbors+1, meters_between_points):
+                    for j in range(-neighbors, neighbors+1, meters_between_points):
+                        points.append([target_itc[0]+i, target_itc[1]+j])
+                points = np.array(points)
+                #remove points that are outside the image
+                points = points[(points[:,0] >= 0) & (points[:,0] < batch.shape[0]) & (points[:,1] >= 0) & (points[:,1] < batch.shape[1])]
+                #remove the target point
+                points = points[~np.all(points == target_itc, axis=1)]
+                #remove points that are too close to the target point
+                points = points[np.linalg.norm(points - target_itc, axis=1) > threshold_distance]
+                #if there are not enough points, add random points
+
             # Subset the array to the ith row and the 10 closest rows
-            subset_point = input_point[closest_indices].astype(np.int8)
-            subset_label = input_label[closest_indices]
-            subset_label = subset_label.astype(np.int8)
-            #append subset_point with the target point
-            subset_point = np.vstack((subset_point, target_itc.astype(np.int8)))
-            subset_label = np.append(subset_label, 1)
+            if point_type != "grid":
+                subset_point = input_point[closest_indices].copy()
+                subset_label = input_label[closest_indices]
+                subset_label = subset_label.astype(np.int8)
+                #append subset_point with the target point
+                subset_point = np.vstack((subset_point, target_itc))
+                subset_label = np.append(subset_label, 1)
+            else:
+                subset_point = points.copy()
+                subset_label = np.ones(points.shape[0], dtype=np.int8)
+                #append subset_point with the target point
+                subset_point = np.vstack((subset_point, target_itc))
+                subset_label = np.append(subset_label, 1)
+
+            #FROM HERE: IF USING ONNX 
+            # #Add a batch index, concatenate a padding point, and transform.
+            onnx_coord = np.concatenate([subset_point, np.array([[0.0, 0.0]])], axis=0)[None, :, :]
+            onnx_label = np.concatenate([subset_label, np.array([-1])], axis=0)[None, :].astype(np.float32)
+            onnx_coord = predictor.transform.apply_coords(onnx_coord, batch.shape[:2]).astype(np.float32)
+            # Create an empty mask input and an indicator for no mask.
+            onnx_mask_input = np.zeros((1, 1, 256, 256), dtype=np.float32)
+            onnx_has_mask_input = np.zeros(1, dtype=np.float32)
+            #Package the inputs to run in the onnx model
+            ort_inputs = {
+                "image_embeddings": image_embedding,
+                "point_coords": onnx_coord.astype(np.float32),
+                "point_labels": onnx_label,
+                "mask_input": onnx_mask_input,
+                "has_mask_input": onnx_has_mask_input,
+                "orig_im_size": np.array(batch.shape[:2], dtype=np.float32)
+            }
+            masks, scores, logits = ort_session.run(None, ort_inputs)
+            masks = masks > predictor.model.mask_threshold
+
+            #uncomment if getting rid of ONNX
+            '''
             masks, scores, logits = predictor.predict(
                 point_coords=subset_point,
                 point_labels=subset_label,
                 multimask_output=False,
             )
+            '''
+
             #pick the mask with the highest score
             if len(masks) > 1:
                 masks = masks[scores.argmax()]
                 scores = scores[scores.argmax()]
             # Find the indices of the True values
-            true_indices = np.argwhere(masks)
+            true_indices = np.argwhere(masks[0,0,:,])
             #skip empty masks
             if true_indices.shape[0] < 3:
                 continue
 
             # Calculate the convex hull
             individual_point = Point(input_point[it])
-            polygons = mask_to_delineation(masks)
+            polygons = mask_to_delineation(masks[0,:,:,:])
             #pick the polygon that intercepts with individual point
             polygons = [poly for poly in polygons if poly.intersects(individual_point)]
             if len(polygons) ==0:

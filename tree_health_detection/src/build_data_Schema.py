@@ -68,10 +68,12 @@ rgb_path = 'imagery/rgb_clip.tif'
 stem_path = 'gradient_boosting_alignment.gpkg'
 hsi_img  = 'imagery/hsi_clip.tif'
 laz_path = 'imagery/LiDAR.laz'
+grid_space = 20
+area_threshold = 100
 # Loop through the files in the folder
 #for file in os.listdir(folder):
 # check if the tree_tops file exists. if not, launch get_tree_tops
-def build_data_schema(folder, stem_path,rgb_path, hsi_path, laz_path):
+def build_data_schema(folder, stem_path,rgb_path, hsi_path, laz_path, grid_space = 20):
 
 
 
@@ -108,7 +110,7 @@ def build_data_schema(folder, stem_path,rgb_path, hsi_path, laz_path):
     image_file = os.path.join(folder, rgb_path)
     hsi_img = os.path.join(folder, hsi_img)
     # Split the image into batches of 40x40m
-    batch_size = 94
+    batch_size = 80
     #image_file, hsi_img, itcs, bbox,  batch_size=40
     raster_batches, raster_hsi_batches, itcs_batches, itcs_boxes, affine = get_itcs_polygons.split_image(image_file, 
                                 hsi_img, itcs, bbox, batch_size)
@@ -117,16 +119,23 @@ def build_data_schema(folder, stem_path,rgb_path, hsi_path, laz_path):
     reload(delineation_utils)
     reload(get_itcs_polygons)
     # Make predictions of tree crown polygons using SAM
-    tmp = raster_hsi_batches[:1]
-    for(i, batch_) in enumerate(raster_hsi_batches):
+    batch_ = raster_batches[0]
+    i = 0
+    for(i, batch_) in enumerate(raster_batches):
         #skip empty batches
         if itcs_boxes[i].shape[0] == 0: 
             continue
         
         torch.cuda.empty_cache()    
         # Make predictions of tree crown polygons using SAM
-        predictions, _, _ = get_itcs_polygons.predict_tree_crowns(batch=batch_[:3,:,:], input_points=itcs_batches[i], rescale_to =400, 
-               neighbors=200,  mode = 'only_points', point_type = "random", input_boxes = itcs_boxes[i] )
+        #define number of neighbors as the image size / grid_spacing
+        #neighbors = int(batch_.shape[1]/grid_space)
+        neighbors = 10
+        predictions, _, _ = get_itcs_polygons.predict_tree_crowns(batch=batch_[:3,:,:], 
+                input_points=itcs_batches[i].copy(), #rescale_to =400, 
+                meters_between_points = 5, threshold_distance =10,
+                neighbors=neighbors,  mode = 'only_points', point_type = "grid",
+                input_boxes = itcs_boxes[i].copy() )
         torch.cuda.empty_cache()    
         # Apply the translation to the geometries in the GeoDataFrame
         x_offset, y_offset = affine[i][2], affine[i][5]
@@ -135,8 +144,18 @@ def build_data_schema(folder, stem_path,rgb_path, hsi_path, laz_path):
         predictions = gpd.GeoDataFrame(predictions, geometry='geometry')
         predictions = predictions[predictions['geometry'].notna()]
         predictions["geometry"] = predictions["geometry"].apply(lambda geom: translate(geom, x_offset, y_offset))
+        
         predictions.crs = rgb_crs
-        #divide by 3 to get the correct coordinates
+        #remove predictions that are clearly too large
+        predictions = predictions[predictions.area < area_threshold]
+
+        #matplotlib.use('Agg')
+        # plot geopandas and save as png
+        #fig, ax = plt.subplots(figsize=(10, 10))
+        #predictions.plot(ax=ax, color='red')
+        #itcs_batches[i].plot(ax=ax, color='blue')
+        #bbox.plot(ax=ax, color='green')
+        #plt.savefig(f'tree_health_detection/debug/itcs_{i}.png')
         
         # Save the predictions as geopandas
         predictions.to_file(f'{folder}/outdir/Polygons/bboxes{i}.gpkg', driver='GPKG')

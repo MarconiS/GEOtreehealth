@@ -23,6 +23,12 @@ from tree_health_detection.src import train_val_t as tvt
 from tree_health_detection.src.spectral_attention import *
 from tree_health_detection.src.utils import *
 
+folder = '../tree_mask_delineation/'
+rgb_tile = 'imagery/rgb_clip.tif'
+stem_path = 'gradient_boosting_alignment.gpkg'
+hyperspectral_tile  = 'imagery/hsi_clip.tif'
+las_file = 'imagery/LiDAR.laz'
+
 def __main__(get_clips = False, noGUI = True):
     if noGUI:
         import matplotlib
