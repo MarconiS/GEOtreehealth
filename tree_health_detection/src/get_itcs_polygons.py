@@ -108,7 +108,7 @@ def mask_to_polygons(mask, individual_point):
     return largest_polygon
 
 
-def mask_to_delineation(mask):
+def mask_to_delineation(mask, rgb = False):
 
     labeled_mask = label(mask, connectivity=1)
     # if 3d flatten to 2d
@@ -117,17 +117,6 @@ def mask_to_delineation(mask):
     #labeled_mask = labeled_mask.astype(np.uint16)
     # Create a dictionary with as many values as unique values in the labeled mask
     label_to_category = {label: category for label, category in zip(np.unique(labeled_mask), range(0, np.unique(labeled_mask).shape[0]))}
-
-    #to speed up, clip the labelled mask to the bounding box around non-zero values
-    #get the bounding box
-    #non_zero_indices = np.nonzero(labeled_mask)
-    #min_x = max(np.min(non_zero_indices[0])-1,0)
-    #max_x = min(np.max(non_zero_indices[0])+1, labeled_mask.shape[0])
-    #min_y = max(np.min(non_zero_indices[1])-1,0)
-    #max_y = min(np.max(non_zero_indices[1])+1, labeled_mask.shape[0])
-    #clip the labelled mask
-    #labeled_mask = labeled_mask[min_x:max_x, min_y:max_y]
-    #get the category mask
 
     category_mask = np.vectorize(label_to_category.get)(labeled_mask)
     
@@ -144,6 +133,10 @@ def mask_to_delineation(mask):
         binary_mask = (binary_mask * 255).astype(np.uint8)
         # Find contours of the binary mask
         contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        #if the data is rgb, rescale to meters by dividing by 10 each index
+        if rgb == True:
+            contours = [contour/10 for contour in contours]
 
         #skip if does not have enough dimensions
         if contours[0].shape[0] < 3:
@@ -162,15 +155,17 @@ def mask_to_delineation(mask):
 
 # sam_checkpoint = "../tree_mask_delineation/SAM/checkpoints/sam_vit_h_4b8939.pth"
 # Define a function to make predictions of tree crown polygons using SAM
-def predict_tree_crowns(batch, input_points, neighbors = 5, 
+def predict_tree_crowns(batch, input_points, neighbors = 4, 
                         input_boxes = None, point_type='grid', 
-                        onnx_model_path = None,  rescale_to = None, mode = 'bbox',
+                        onnx_model_path = None,  rescale_to = None, mode = 'bbox', rgb = True,
                         sam_checkpoint = "../tree_mask_delineation/SAM/checkpoints/sam_vit_h_4b8939.pth",
-                        model_type = "vit_h", meters_between_points = 50, threshold_distance =50):
+                        model_type = "vit_h", grid_size = 10):
 
     from tree_health_detection.src.get_itcs_polygons import mask_to_delineation
     from skimage import exposure
     batch = np.moveaxis(batch, 0, -1)
+    batch = np.flip(batch, axis=0) 
+    #batch = np.flip(batch, axis=1) 
     #age = Image.fromarray(batch)
     #age.save('output.png')
     original_shape = batch.shape
@@ -225,10 +220,10 @@ def predict_tree_crowns(batch, input_points, neighbors = 5,
 
 
     #neighbors must be the minimum between the total number of input_points and the argument neighbors
-    neighbors = min(input_points.shape[0]-2, neighbors)
+    #neighbors = min(input_points.shape[0]-2, neighbors)
     #rescale image to larger size if rescale_to is not null
     if rescale_to is not None:
-        batch = resize(batch, (rescale_to, rescale_to), order=3, mode='constant', cval=0, clip=True, preserve_range=True)
+        batch = resize(batch, (rescale_to, rescale_to), order=3, mode='constant', cval=0, clip=True, preserve_range=True, anti_aliasing=False)
         input_points['x'] = input_points['x'] * rescale_to / original_shape[1]
         input_points['y'] = input_points['y'] * rescale_to / original_shape[0]
         #rescale xmin, ymin, xmax, ymax of input_boxes
@@ -258,15 +253,20 @@ def predict_tree_crowns(batch, input_points, neighbors = 5,
     crown_masks = []
 
     if input_boxes is not None and mode == 'bbox':# and onnx_model_path is None:
-        # this part may be a GPU bottleneck. Better divide the boxes into batches of 1000 max
-        # divede the boxes into batches of 1000 max if they are more than 1000
-        transformed_boxes_batch = input_boxes
+        # if input_boxes is pandas, turn into numpy
+        if isinstance(input_boxes, pd.DataFrame):
+            input_boxes = input_boxes.to_numpy()
+        transformed_boxes_batch = input_boxes[:,:4].copy()
+        #if column StemTag is present, add it to the transformed_boxes_batch
+        if input_boxes.shape[1] == 5:
+            stemID = input_boxes[:,4].copy()
+
         transformed_boxes_batch = torch.tensor(transformed_boxes_batch, device=predictor.device)
         transformed_boxes_batch = predictor.transform.apply_boxes_torch(transformed_boxes_batch, batch.shape[:2])
         masks,scores, logits = predictor.predict_torch(
             point_coords=None,
             point_labels=None,
-            boxes=transformed_boxes_batch.int(),
+            boxes=transformed_boxes_batch,
             multimask_output=False,
         )
         #free space from GPU
@@ -297,10 +297,81 @@ def predict_tree_crowns(batch, input_points, neighbors = 5,
                 # Create a GeoDataFrame and append the polygon
                 gdf_temp = gpd.GeoDataFrame(geometry=[polygons[0]], columns=["geometry"])
                 gdf_temp["score"] = crown_scores[msks][it]
-                gdf_temp["point_id"] = str(msks)+'_'+str(it)
+                if input_boxes.shape[1] == 5:
+                    gdf_temp["StemTag"] = stemID[it]
+                else:    
+                    gdf_temp["StemTag"] = str(msks)+'_'+str(it)
 
                 # Append the temporary GeoDataFrame to the main GeoDataFrame
                 crown_mask = pd.concat([crown_mask, gdf_temp], ignore_index=True)
+
+    if input_boxes is not None and mode == 'bbox_and_centers':# and onnx_model_path is None:
+                # if input_boxes is pandas, turn into numpy
+        if isinstance(input_boxes, pd.DataFrame):
+            input_boxes = input_boxes.to_numpy()
+        transformed_boxes_batch = input_boxes[:,:4].copy()
+        #if column StemTag is present, add it to the transformed_boxes_batch
+        if input_boxes.shape[1] == 5:
+            stemID = input_boxes[:,4].copy()
+        else:
+            stemID = np.arange(input_boxes.shape[0])
+
+        # get the center of each box assuming that that is for sure a point in the crown
+        centers = (transformed_boxes_batch[:,0] + transformed_boxes_batch[:,2])/2 
+        #append a colum to center with y mean
+        centers = np.column_stack((centers, (transformed_boxes_batch[:,1]+ transformed_boxes_batch[:,3])/2))
+        #get the cardinal points of each box: north east
+        cardinal_points_1 =   np.column_stack((transformed_boxes_batch[:,0], transformed_boxes_batch[:,1]))
+        # get the cardinal points for each box: south west
+        cardinal_points_2 =  np.column_stack((transformed_boxes_batch[:,2], transformed_boxes_batch[:,3]))
+        # get the cardinal points for each box: south east
+        cardinal_points_3 =  np.column_stack((transformed_boxes_batch[:,2], transformed_boxes_batch[:,1]))
+        # get the cardinal points for each box: north west
+        cardinal_points_4 =  np.column_stack((transformed_boxes_batch[:,0], transformed_boxes_batch[:,3]))
+
+        #loop through each box
+        for it in range(transformed_boxes_batch.shape[0]):
+            input_label = [0,0,0,0,1]
+            target_points = np.array([cardinal_points_1[it], cardinal_points_2[it], cardinal_points_3[it], cardinal_points_4[it], centers[it]])
+            target_box = transformed_boxes_batch[it].copy()
+            masks,scores, logits = predictor.predict(
+                point_coords=target_points,
+                point_labels=input_label,
+                box=target_box,
+                multimask_output=True,
+            )
+
+            #pick the mask with the highest score
+            if len(masks) > 1:
+                masks = masks[scores.argmax()]
+                scores = scores[scores.argmax()]
+            # Find the indices of the True values
+            true_indices = np.argwhere(masks)
+            #skip empty masks
+            if true_indices.shape[0] < 3:
+                continue
+            
+            target_itc = centers[it].copy()
+            # Calculate the convex hull
+            if rgb:
+                target_itc = target_itc/10 
+
+            individual_point = Point(target_itc)
+            polygons = mask_to_delineation(masks.copy(), rgb=rgb)
+            #pick the polygon that intercepts with individual point
+            #polygons = [poly for poly in polygons if poly.intersects(individual_point)]
+            if len(polygons) ==0:
+                continue
+
+            # Create a GeoDataFrame and append the polygon
+            gdf_temp = gpd.GeoDataFrame(geometry=[polygons[0]], columns=["geometry"])
+            gdf_temp["score"] = scores
+            gdf_temp["StemTag"] = stemID[it]
+
+            # Append the temporary GeoDataFrame to the main GeoDataFrame
+            crown_mask = pd.concat([crown_mask, gdf_temp], ignore_index=True)
+            crown_scores.append(scores)
+            crown_logits.append(logits)
 
 
     if input_boxes is None or mode == 'only_points':# and onnx_model_path is None:
@@ -310,6 +381,11 @@ def predict_tree_crowns(batch, input_points, neighbors = 5,
             input_label = np.zeros(input_point.shape[0])
             input_label[it] = 1
             target_itc = input_point[it].copy()
+
+            if rgb == True:
+                target_itc[0] = target_itc[0] *10
+                target_itc[1] = target_itc[1] *10
+
             # subset the input_points to be the current point and the 10 closest points
             # Calculate the Euclidean distance between the ith row and the other rows
             distances = np.linalg.norm(input_point - input_point[it], axis=1)
@@ -326,20 +402,43 @@ def predict_tree_crowns(batch, input_points, neighbors = 5,
                 closest_indices = np.random.choice(np.delete(np.arange(input_point.shape[0]), it), neighbors, replace=False)
 
             elif point_type == "grid":
-                #create a grid of points around the target point, that is within the bounds of the image
+                #create a grid of points around the target_itc, the grid is a squared box around target_itc. 
+                # if neighbors = 4 get the corners of the box
+                # if neighbors = 8 get the corners and the midpoints of the sides
+                # if neighbors = 16 get the corners, the midpoints of the sides and the center
+                # if points outside the image, pick the closest point inside the image
+
                 points = []
-                #loop through predefined distance between points
-                for i in range(-neighbors, neighbors+1, meters_between_points):
-                    for j in range(-neighbors, neighbors+1, meters_between_points):
-                        points.append([target_itc[0]+i, target_itc[1]+j])
-                points = np.array(points)
-                #remove points that are outside the image
-                points = points[(points[:,0] >= 0) & (points[:,0] < batch.shape[0]) & (points[:,1] >= 0) & (points[:,1] < batch.shape[1])]
-                #remove the target point
-                points = points[~np.all(points == target_itc, axis=1)]
-                #remove points that are too close to the target point
-                points = points[np.linalg.norm(points - target_itc, axis=1) > threshold_distance]
-                #if there are not enough points, add random points
+                #get the coordinates of the target_itc
+                x = target_itc[0]
+                y = target_itc[1]
+                #get the coordinates of the top left corner of the grid
+                #make sure that the grid is inside the image
+                #append to points
+                points.append([max(x - grid_size, 0), min(y + grid_size, batch.shape[0])])
+                #get the coordinates of the bottom right corner of the grid
+                points.append([min(x + grid_size, batch.shape[1]), max(y - grid_size, 0)])
+                #get the coordinates of the top right corner of the grid
+                points.append([min(x + grid_size, batch.shape[1]), min(y + grid_size, batch.shape[0])])
+                #get the coordinates of the bottom left corner of the grid
+                points.append([max(x - grid_size, 0), max(y - grid_size, 0)])
+                #get the coordinates of the midpoints of the sides of the grid
+                points.append([x, min(y + grid_size, batch.shape[0])])
+                points.append([x, max(y - grid_size, 0)])
+                points.append([min(x + grid_size, batch.shape[1]), y])
+                points.append([max(x - grid_size, 0), y])
+                #get the coordinates of the midpoints of the sides of the grid
+                points.append([min(x + grid_size, batch.shape[1]), min(y + grid_size, batch.shape[0])])
+                points.append([max(x - grid_size, 0), min(y + grid_size, batch.shape[0])])
+                points.append([min(x + grid_size, batch.shape[1]), max(y - grid_size, 0)])
+                points.append([max(x - grid_size, 0), max(y - grid_size, 0)])
+                #get the coordinates of the midpoints of the sides of the grid
+                points.append([x, min(y + grid_size, batch.shape[0])])
+                points.append([x, max(y - grid_size, 0)])
+                points.append([min(x + grid_size, batch.shape[1]), y])
+                points.append([max(x - grid_size, 0), y])
+
+                points = np.array(points)[:neighbors,:]
 
             # Subset the array to the ith row and the 10 closest rows
             if point_type != "grid":
@@ -396,8 +495,11 @@ def predict_tree_crowns(batch, input_points, neighbors = 5,
                 continue
 
             # Calculate the convex hull
-            individual_point = Point(input_point[it])
-            polygons = mask_to_delineation(masks[0,:,:,:])
+            if rgb:
+                target_itc = target_itc/10 
+
+            individual_point = Point(target_itc)
+            polygons = mask_to_delineation(masks[0,:,:,:].copy(), rgb=rgb)
             #pick the polygon that intercepts with individual point
             polygons = [poly for poly in polygons if poly.intersects(individual_point)]
             if len(polygons) ==0:

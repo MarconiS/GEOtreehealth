@@ -73,7 +73,7 @@ area_threshold = 100
 # Loop through the files in the folder
 #for file in os.listdir(folder):
 # check if the tree_tops file exists. if not, launch get_tree_tops
-def build_data_schema(folder, stem_path,rgb_path, hsi_path, laz_path, grid_space = 20):
+def build_data_schema(folder, stem_path,rgb_path, hsi_path, laz_path, grid_space = 20, hierachical_predictions = False, threshold_score=0.8):
 
 
 
@@ -110,7 +110,7 @@ def build_data_schema(folder, stem_path,rgb_path, hsi_path, laz_path, grid_space
     image_file = os.path.join(folder, rgb_path)
     hsi_img = os.path.join(folder, hsi_img)
     # Split the image into batches of 40x40m
-    batch_size = 80
+    batch_size = 40
     #image_file, hsi_img, itcs, bbox,  batch_size=40
     raster_batches, raster_hsi_batches, itcs_batches, itcs_boxes, affine = get_itcs_polygons.split_image(image_file, 
                                 hsi_img, itcs, bbox, batch_size)
@@ -126,16 +126,22 @@ def build_data_schema(folder, stem_path,rgb_path, hsi_path, laz_path, grid_space
         if itcs_boxes[i].shape[0] == 0: 
             continue
         
-        torch.cuda.empty_cache()    
+        torch.cuda.empty_cache()  
+        input_points=itcs_batches[i].copy()
+        input_boxes = itcs_boxes[i].copy()
+        batch = batch_[:3,:,:].copy()
+
+        #plot 1 band of batch array
+        #plt.imshow(batch[0,:,:])
+        # rescale  point and boxes coordiantes if using rgb as batch rather than hsi. 
+        # please include this asap in the split_image function instead. Now just checking it out if it works
         # Make predictions of tree crown polygons using SAM
-        #define number of neighbors as the image size / grid_spacing
-        #neighbors = int(batch_.shape[1]/grid_space)
-        neighbors = 10
-        predictions, _, _ = get_itcs_polygons.predict_tree_crowns(batch=batch_[:3,:,:], 
-                input_points=itcs_batches[i].copy(), #rescale_to =400, 
-                meters_between_points = 5, threshold_distance =10,
-                neighbors=neighbors,  mode = 'only_points', point_type = "grid",
-                input_boxes = itcs_boxes[i].copy() )
+        predictions, _, _ = get_itcs_polygons.predict_tree_crowns(batch=batch, 
+                input_points=input_points, #rescale_to =400, 
+                grid_size = 20, rgb = True,
+                neighbors=16,  mode = 'only_points', point_type = "grid",
+                input_boxes = input_boxes )
+        
         torch.cuda.empty_cache()    
         # Apply the translation to the geometries in the GeoDataFrame
         x_offset, y_offset = affine[i][2], affine[i][5]
@@ -147,23 +153,52 @@ def build_data_schema(folder, stem_path,rgb_path, hsi_path, laz_path, grid_space
         
         predictions.crs = rgb_crs
         #remove predictions that are clearly too large
-        predictions = predictions[predictions.area < area_threshold]
-
-        #matplotlib.use('Agg')
-        # plot geopandas and save as png
-        #fig, ax = plt.subplots(figsize=(10, 10))
-        #predictions.plot(ax=ax, color='red')
-        #itcs_batches[i].plot(ax=ax, color='blue')
-        #bbox.plot(ax=ax, color='green')
-        #plt.savefig(f'tree_health_detection/debug/itcs_{i}.png')
+        predictions.area
+        predictions = predictions[predictions.area < 600]
         
-        # Save the predictions as geopandas
-        predictions.to_file(f'{folder}/outdir/Polygons/bboxes{i}.gpkg', driver='GPKG')
-        #clip boxes to the extent of predictions
+        if hierachical_predictions:
+            #if predictions are not empty, run the hierarchical predictions
+            if predictions.shape[0] > 0:
+                # using predictions, create a new variable with predictions bounding boxes
+                p_bboxes = predictions.copy()
+                #remove boxes with low score
+                p_bboxes = p_bboxes[p_bboxes['score'] > threshold_score]
+                p_bboxes = p_bboxes.geometry.bounds
+                # append StemTag to p_bboxes
+                p_bboxes['StemTag'] = predictions['StemTag'].copy()
+                # turn coordinates back to clip coordinates
+                p_bboxes['minx'] = p_bboxes['minx'] - x_offset
+                p_bboxes['maxx'] = p_bboxes['maxx'] - x_offset
+                p_bboxes['miny'] = p_bboxes['miny'] - y_offset
+                p_bboxes['maxy'] = p_bboxes['maxy'] - y_offset
+                #run the predictions using the bouding boxes
+                batch_hsi = raster_hsi_batches[i].copy()
+                batch_hsi = batch_hsi[:3,:,:]
+                h_preds, scores, _ = get_itcs_polygons.predict_tree_crowns(batch=batch_hsi.copy(), 
+                    rgb = False, input_points = input_points, #rescale_to =40, 
+                    mode = 'bbox_and_centers', input_boxes = p_bboxes.copy())
+                
+                # Apply the translation to the geometries in the GeoDataFrame
+                h_preds = gpd.GeoDataFrame(h_preds, geometry='geometry')
+                h_preds = h_preds[h_preds['geometry'].notna()]
+                h_preds["geometry"] = h_preds["geometry"].apply(lambda geom: translate(geom, x_offset, y_offset))
+                h_preds['score']=scores
+                h_preds.crs = rgb_crs
+                #remove predictions that are clearly too large
+                h_preds.area
+                h_preds = h_preds[h_preds.area < 600]
+                h_preds.to_file(f'{folder}/outdir/HPoly/bboxes{i}.gpkg', driver='GPKG')
+        else:
+            # Save the predictions as geopandas
+            predictions.to_file(f'{folder}/outdir/Polygons/bboxes{i}.gpkg', driver='GPKG')
+            #clip boxes to the extent of predictions
         
         bbox.to_file(f'{folder}/outdir/deepForest/bboxes{i}.gpkg', driver='GPKG')
 
-        batch_ = batch_[:3,:,:]
-        batch_ = np.moveaxis(batch_, 0, -1)
-        imageio.imwrite(f'{folder}/outdir/clips/itcs_{i}.png', batch_)
+        #batch = batch_[:3,:,:].copy()
+        batch = np.moveaxis(batch, 0, -1)
+        flipped = np.flip(batch, axis=1) 
+        flipped = np.flip(flipped, axis=1) 
+        #flipped = np.transpose(flipped, (1, 0, 2)) # swap height and width
+        imageio.imwrite(f'{folder}/outdir/clips/itcs_{i}.png', flipped)
 
