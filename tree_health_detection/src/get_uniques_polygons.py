@@ -139,3 +139,6 @@ def clean_oversegmentations(gdf, tag = 'StemTag'):
     gdf_cleaned = gdf.drop(to_remove)
     # Write the cleaned GeoDataFrame to a file
     gdf_cleaned.to_file('indir/SERC/itcs_cleaned.gpkg', driver='GPKG')
+
+
+    

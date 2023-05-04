@@ -308,3 +308,35 @@ def check_among_us():
     for name, mem in sorted_memory_usage:
         print(f"{name}: {mem} bytes")
 
+
+
+def assign_polygon_to_crown(crowns, stem_positions):
+    # Assuming you have stem_positions (points) and crowns (polygons) GeoDataFrames
+    # Add a new column to store the corresponding crown ID for each stem_position
+    stem_positions['crown_id'] = np.nan
+
+    for idx, crown in crowns.iterrows():
+        # Calculate the distance from each stem_position to the current crown
+        distances = stem_positions.distance(crown.geometry.centroid)
+        
+        # Filter stem_positions within the current crown
+        stems_within_crown = stem_positions[crown.geometry.contains(stem_positions.geometry)]
+        
+        # If more than 1 stem_position is within the current crown, find the closest one
+        if len(stems_within_crown) > 1:
+            min_distance_index = distances.loc[stems_within_crown.index].idxmin()
+            stem_positions.loc[min_distance_index, 'crown_id'] = idx
+        elif len(stems_within_crown) == 1:
+            stem_positions.loc[stems_within_crown.index[0], 'crown_id'] = idx
+
+    # Check if there are any stem_positions that are not assigned to a crown
+    if stem_positions['crown_id'].isna().any():
+        print("There are some stem_positions that are not assigned to a crown.")
+        print(stem_positions[stem_positions['crown_id'].isna()])
+    
+    # assign stem attributes to crowns based on crown_id
+    crowns['StemTag'] = crowns.apply(lambda x: stem_positions[stem_positions['crown_id'] == x.name], axis=1)
+
+
+    print(stem_positions)
+    return None

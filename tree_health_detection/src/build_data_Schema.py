@@ -73,6 +73,28 @@ area_threshold = 100
 # Loop through the files in the folder
 #for file in os.listdir(folder):
 # check if the tree_tops file exists. if not, launch get_tree_tops
+
+def read_and_append_geopackages(folder_path):
+    # List all GeoPackage files in the folder
+    geopackage_files = list_geopackage_files(folder_path)
+
+    # Initialize an empty list to store individual GeoDataFrames
+    geodataframes = []
+
+    # Iterate through GeoPackage files and read them into GeoDataFrames
+    for geopackage_file in geopackage_files:
+        geodataframes.append(gpd.read_file(geopackage_file))
+
+    # Concatenate all GeoDataFrames into a single GeoDataFrame
+    combined_gdf = gpd.GeoDataFrame(pd.concat(geodataframes, ignore_index=True))
+
+    return combined_gdf
+
+def list_geopackage_files(folder_path):
+    return [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.endswith(".gpkg")]
+
+
+
 def build_data_schema(folder, stem_path,rgb_path, hsi_path, laz_path, grid_space = 20, hierachical_predictions = False, threshold_score=0.8):
 
 
@@ -110,7 +132,7 @@ def build_data_schema(folder, stem_path,rgb_path, hsi_path, laz_path, grid_space
     image_file = os.path.join(folder, rgb_path)
     hsi_img = os.path.join(folder, hsi_img)
     # Split the image into batches of 40x40m
-    batch_size = 40
+    batch_size = 60
     #image_file, hsi_img, itcs, bbox,  batch_size=40
     raster_batches, raster_hsi_batches, itcs_batches, itcs_boxes, affine = get_itcs_polygons.split_image(image_file, 
                                 hsi_img, itcs, bbox, batch_size)
@@ -137,10 +159,10 @@ def build_data_schema(folder, stem_path,rgb_path, hsi_path, laz_path, grid_space
         # please include this asap in the split_image function instead. Now just checking it out if it works
         # Make predictions of tree crown polygons using SAM
         predictions, _, _ = get_itcs_polygons.predict_tree_crowns(batch=batch, 
-                input_points=input_points, #rescale_to =400, 
-                grid_size = 20, rgb = True,
+                input_points=input_points, #rescale_to =800, 
+                grid_size = 30, rgb = True,
                 neighbors=16,  mode = 'only_points', point_type = "grid",
-                input_boxes = input_boxes )
+                 input_boxes = input_boxes)
         
         torch.cuda.empty_cache()    
         # Apply the translation to the geometries in the GeoDataFrame
@@ -154,7 +176,7 @@ def build_data_schema(folder, stem_path,rgb_path, hsi_path, laz_path, grid_space
         predictions.crs = rgb_crs
         #remove predictions that are clearly too large
         predictions.area
-        predictions = predictions[predictions.area < 600]
+        predictions = predictions[predictions.area < 900]
         
         if hierachical_predictions:
             #if predictions are not empty, run the hierarchical predictions
@@ -186,19 +208,36 @@ def build_data_schema(folder, stem_path,rgb_path, hsi_path, laz_path, grid_space
                 h_preds.crs = rgb_crs
                 #remove predictions that are clearly too large
                 h_preds.area
-                h_preds = h_preds[h_preds.area < 600]
-                h_preds.to_file(f'{folder}/outdir/HPoly/bboxes{i}.gpkg', driver='GPKG')
+                h_preds = h_preds[h_preds.area < 900]
+                h_preds.to_file(f'{folder}/tmp/bboxes{i}.gpkg', driver='GPKG')
         else:
             # Save the predictions as geopandas
-            predictions.to_file(f'{folder}/outdir/Polygons/bboxes{i}.gpkg', driver='GPKG')
+            predictions.to_file(f'{folder}/tmp/DF_box_{i}.gpkg', driver='GPKG')
             #clip boxes to the extent of predictions
-        
-        bbox.to_file(f'{folder}/outdir/deepForest/bboxes{i}.gpkg', driver='GPKG')
+
+        # sect itcs with StemTag in input_points
+        itcs_ = itcs.copy()[itcs['StemTag'].isin(input_points['StemTag'])]
+        # clip overlapping boxes and get only individual stems
+        segment = clean_oversegmentations_by_overlap(predictions)
+        segment = split_multipolygons_to_polygons(segment)
+        segment = segment[segment['geometry'].type.isin(['Polygon', 'MultiPolygon'])].reset_index(drop=True)
+        # Remove all polygons from non_overlapping_gdf that are less than 4m2
+        segment = segment[segment.area > 4].reset_index(drop=True)
+
+        segment.to_file(f'{folder}/tmp/Poly/poly_{i}.gpkg', driver='GPKG')
+
+        #bbox.to_file(f'{folder}/outdir/deepForest/bboxes{i}.gpkg', driver='GPKG')
 
         #batch = batch_[:3,:,:].copy()
-        batch = np.moveaxis(batch, 0, -1)
-        flipped = np.flip(batch, axis=1) 
-        flipped = np.flip(flipped, axis=1) 
+        #batch = np.moveaxis(batch, 0, -1)
+        #flipped = np.flip(batch, axis=1) 
+        #flipped = np.flip(flipped, axis=1) 
         #flipped = np.transpose(flipped, (1, 0, 2)) # swap height and width
-        imageio.imwrite(f'{folder}/outdir/clips/itcs_{i}.png', flipped)
+        #imageio.imwrite(f'{folder}/outdir/clips/itcs_{i}.png', flipped)
+
+    folder_path = f'{folder}/outdir/Polygons/'
+    combined_gdf = read_and_append_geopackages(folder_path)
+    combined_gdf.to_file(f'{folder}/outdir/combined_gdf.gpkg', driver='GPKG')
+
+
 

@@ -567,6 +567,39 @@ def upscale_array(input_array, reference_array, input_resolution, reference_reso
 
     return upscaled_array
 
+import numpy as np
+import pandas as pd
+import geopandas as gpd
+import rasterio
+from rasterio.windows import Window
+from shapely.geometry import box
+from rasterio.warp import reproject, Resampling
+
+
+def upscale_array(array, reference_array, input_resolution, target_resolution):
+    height, width = reference_array.shape[1:]
+    src_transform = rasterio.Affine(input_resolution, 0, 0, 0, -input_resolution, 0)
+    dst_transform = rasterio.Affine(target_resolution, 0, 0, 0, -target_resolution, 0)
+    dst_shape = (array.shape[0], height, width)
+    dst_array = np.empty(dst_shape, dtype=array.dtype)
+
+    reproject(
+        array,
+        dst_array,
+        src_transform=src_transform,
+        dst_transform=dst_transform,
+        src_crs={'init': 'EPSG:4326'},
+        dst_crs={'init': 'EPSG:4326'},
+        resampling=Resampling.bilinear
+    )
+
+    return dst_array
+
+'''
+def transform_coordinates(geometry, x_offset, y_offset):
+    return geometry.translate(x_offset=-x_offset, y_offset=-y_offset)
+'''
+
 def split_image(image_file, hsi_img, itcs, bbox,  batch_size=40):
     # Open the raster image
 
@@ -668,7 +701,6 @@ def split_image(image_file, hsi_img, itcs, bbox,  batch_size=40):
             dbox.append(bbox_clipped)
     # Return the lists of raster batches and clipped GeoDataFrames
     return raster_batches, hsi_batches, itcs_batches, itcs_boxes, affines
-
 
 
 # merge bbox and tmp_bx, then subtract bbox from tmp_bx
