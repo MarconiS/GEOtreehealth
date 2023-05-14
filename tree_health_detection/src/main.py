@@ -23,6 +23,13 @@ from tree_health_detection.src import train_val_t as tvt
 from tree_health_detection.src.spectral_attention import *
 from tree_health_detection.src.utils import *
 
+rgb_tile = 'indir/SERC/rgb_clip.tif'
+stem_path = 'indir/SERC/gradient_boosting_alignment.gpkg'
+hyperspectral_tile  = 'indir/SERC/hsi_clip.tif'
+las_file = 'indir/SERC/LiDAR.laz'
+crowns = 'indir/SERC/itcs.gpkg'
+SAM_outputs = '/home/smarconi/Documents/GitHub/tree_mask_delineation/outdir/itcs/backup/'
+
 def __main__(get_clips = False, noGUI = True):
     if noGUI:
         import matplotlib
@@ -30,10 +37,30 @@ def __main__(get_clips = False, noGUI = True):
         
     import matplotlib.pyplot as plt
 
-    stem_positions = gpd.read_file("/home/smarconi/Documents/GitHub/Macrosystems_analysis/Data/geolocations/SERC/field.shp")
-    hyperspectral_tile = '/home/smarconi/Documents/DAT_for_health/SERC/SERC/HSI.tif'
-    rgb_tile = '/home/smarconi/Documents/DAT_for_health/SERC/SERC/2021_SERC_5_364000_4305000_image.tif'
-    las_file = '/home/smarconi/Documents/GitHub/Macrosystems_analysis/Data/remotesensing/DP1.30003.001/neon-aop-products/2021/FullSite/D02/2021_SERC_5/L1/DiscreteLidar/ClassifiedPointCloud/NEON_D02_SERC_DP1_364000_4305000_classified_point_cloud_colorized.laz'
+    #get the crowns that match with stem_path
+    if crowns is not None:
+        crowns = gpd.read_file(crowns)
+    else:
+        #loop through geopackages in custom folder and append polygons in a unique geodataframe
+        crowns = gpd.GeoDataFrame()
+        for file in os.listdir(SAM_outputs):
+            if file.endswith('.gpkg'):
+                # skip file if empty
+                if os.stat(SAM_outputs + file).st_size == 0:
+                    continue
+  
+                crowns = pd.concat([crowns, gpd.read_file(SAM_outputs + file)],ignore_index=True)
+                crowns.to_file('indir/SERC/itcs.gpkg') 
+    
+
+
+    stem_positions = gpd.read_file('indir/SERC/gradient_boosting_alignment.gpkg')
+    if 'StemTag' not in crowns.columns:
+        # left join crowns and stem_positions by StemTag, assigning a polygon to each stem
+        stem_positions = gpd.sjoin(stem_positions, crowns, how="left", op='within')
+
+    # left_join crowns and stem_positions by StemTag, keep only crowns polygon geometries
+    stem_positions = gpd.sjoin(stem_positions, crowns[['StemTag', 'geometry']], how="left", op='within')
     # remove points not visible from sky
     stem_positions = stem_positions[stem_positions['Crwnpst'] >2]
     # just for testing, get some per class
