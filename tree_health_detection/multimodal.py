@@ -2,17 +2,15 @@ import torch
 import torch.nn as nn
 from torchvision.models import resnet50
 
-from tree_health_detection.src import point_net_lidar as lsd
-from tree_health_detection.src import RGBModel as rgbm
-from tree_health_detection.src import hyperspectral_model as hsim
+
 
 
 class MultiModalModel(nn.Module):
     def __init__(self, num_classes, num_bands):
         super(MultiModalModel, self).__init__()
-        self.rgb_model = rgbm.RGBModel()
-        self.hyperspectral_model = hsim.HyperspectralModel(num_bands)
-        self.lidar_model = lsd.LiDARModel()
+        self.rgb_model = tree_health_detection.RGBModel()
+        self.hyperspectral_model = tree_health_detection.HyperspectralModel(num_bands)
+        self.lidar_model = tree_health_detection.LiDARModel()
         #2048 are the features from the RGB model, 64 are the features from the hyperspectral model
         self.fc1 = nn.Linear(2048 + 64 + 3, 512) #+ lidar_output_size
         self.fc2 = nn.Linear(512, 256)

@@ -7,7 +7,6 @@ from torch.utils.data import DataLoader, random_split
 from torchvision import datasets, transforms
 from torchvision.utils import save_image
 import os
-from tree_health_detection.src.utils import plot_validation_images
 #import matplotlib.pyplot as plt
 
 def train(model, dataloader, criterion, optimizer, device, experiment):
@@ -115,7 +114,7 @@ def test(model, dataloader, device, experiment, noGUI = True, bands_to_plot = [1
                     hs_np = (hs_np - hs_np.min()) / (hs_np.max() - hs_np.min())
 
                     # Plot and log images
-                    fig = plot_validation_images([rgb_np, hs_np], [f"True: {true_labels[-1]}, Predicted: {predicted_labels[-1]}"] * 2, noGUI, cmap="gray" if hs_np.ndim == 2 else None)
+                    fig = tree_health_detection.plot_validation_images([rgb_np, hs_np], [f"True: {true_labels[-1]}, Predicted: {predicted_labels[-1]}"] * 2, noGUI, cmap="gray" if hs_np.ndim == 2 else None)
                     experiment.log_figure("Test Images", fig)
                     plt.close(fig)
 

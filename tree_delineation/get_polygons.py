@@ -108,68 +108,18 @@ def mask_to_polygons(mask, individual_point):
     return largest_polygon
 
 
-def mask_to_delineation_legacy(mask, rgb = False):
-
-    labeled_mask = label(mask, connectivity=1)
-    # if 3d flatten to 2d
-    if len(labeled_mask.shape) == 3:
-        labeled_mask=labeled_mask[0,:,:]
-    #labeled_mask = labeled_mask.astype(np.uint16)
-    # Create a dictionary with as many values as unique values in the labeled mask
-    label_to_category = {label: category for label, category in zip(np.unique(labeled_mask), range(0, np.unique(labeled_mask).shape[0]))}
-
-    category_mask = np.vectorize(label_to_category.get)(labeled_mask)
-    
-    # Turn each category into a polygon
-    polygons = []
-    
-    for category in np.unique(category_mask):
-        if category == 0:  # Skip the background
-            continue
-
-        # Create a binary mask for the current category
-        binary_mask = (category_mask == category).astype(np.uint8)
-        # Convert binary_mask to 8-bit single-channel image
-        binary_mask = (binary_mask * 255).astype(np.uint8)
-        # Find contours of the binary mask
-        contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        # use a concave hull instead
-        contours = [cv2.convexHull(contour) for contour in contours]
-        #if the data is rgb, rescale to meters by dividing by 10 each index
-        if rgb == True:
-            contours = [contour/10 for contour in contours]
-
-        #skip if does not have enough dimensions
-        if contours[0].shape[0] < 3:
-            continue
-        # Convert the contours to polygons
-        for contour in contours:
-            # Simplify the contour to a polygon
-            poly = Polygon(shell=contour.squeeze())
-            polygons.append(poly)
-
-        # shift polygons coordinates to the position before clipping labelled mask
-        #polygons = [translate(poly, xoff=min_x, yoff=min_y) for poly in polygons]
-
-    return polygons
-
-
 # sam_checkpoint = "../tree_mask_delineation/SAM/checkpoints/sam_vit_h_4b8939.pth"
 # Define a function to make predictions of tree crown polygons using SAM
-def predict_tree_crowns_legacy(batch, input_points, neighbors = 4, 
+def predict_tree_crowns(batch, input_points, neighbors = 3, 
                         input_boxes = None, point_type='grid', 
-                        onnx_model_path = None,  rescale_to = None, mode = 'bbox', rgb = True,
+                        onnx_model_path = None,  rescale_to = None, mode = 'only_points', rgb = True,
                         sam_checkpoint = "../tree_mask_delineation/SAM/checkpoints/sam_vit_h_4b8939.pth",
-                        model_type = "vit_h", grid_size = 10):
+                        model_type = "vit_h", grid_size = 6):
 
-    from tree_health_detection.src.get_itcs_polygons import mask_to_delineation
+    #from tree_health_detection.src.get_itcs_polygons import mask_to_delineation
     from skimage import exposure
     batch = np.moveaxis(batch, 0, -1)
     batch = np.flip(batch, axis=0) 
-    #batch = np.flip(batch, axis=1) 
-    #age = Image.fromarray(batch)
-    #age.save('output.png')
     original_shape = batch.shape
 
     #change input boxes values into integers
@@ -178,48 +128,6 @@ def predict_tree_crowns_legacy(batch, input_points, neighbors = 4,
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
-
-    if onnx_model_path == None:
-        onnx_model_path = "tree_health_detection/tmp_data/sam_onnx_example.onnx"
-
-        onnx_model = SamOnnxModel(sam, return_single_mask=True)
-
-        dynamic_axes = {
-            "point_coords": {1: "num_points"},
-            "point_labels": {1: "num_points"},
-        }
-
-        embed_dim = sam.prompt_encoder.embed_dim
-        embed_size = sam.prompt_encoder.image_embedding_size
-        mask_input_size = [4 * x for x in embed_size]
-        dummy_inputs = {
-            "image_embeddings": torch.randn(1, embed_dim, *embed_size, dtype=torch.float).to('cpu'),
-            "point_coords": torch.randint(low=0, high=1024, size=(1, 5, 2), dtype=torch.float).to('cpu'),
-            "point_labels": torch.randint(low=0, high=4, size=(1, 5), dtype=torch.float).to('cpu'),
-            "mask_input": torch.randn(1, 1, *mask_input_size, dtype=torch.float).to('cpu'),
-            "has_mask_input": torch.tensor([1], dtype=torch.float).to('cpu'),
-            "orig_im_size": torch.tensor([1500, 2250], dtype=torch.float).to('cpu'),
-        }
-        output_names = ["masks", "iou_predictions", "low_res_masks"]
-
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=torch.jit.TracerWarning)
-            warnings.filterwarnings("ignore", category=UserWarning)
-            with open(onnx_model_path, "wb") as f:
-                torch.onnx.export(
-                    onnx_model,
-                    tuple(dummy_inputs.values()),
-                    f,
-                    export_params=True,
-                    verbose=False,
-                    opset_version=17,
-                    do_constant_folding=True,
-                    input_names=list(dummy_inputs.keys()),
-                    output_names=output_names,
-                    dynamic_axes=dynamic_axes,
-                )   
-        
-
 
     #neighbors must be the minimum between the total number of input_points and the argument neighbors
     #neighbors = min(input_points.shape[0]-2, neighbors)
@@ -238,7 +146,6 @@ def predict_tree_crowns_legacy(batch, input_points, neighbors = 4,
     # linear stretch of the batch image, between 0 and 255
     batch = exposure.rescale_intensity(batch, out_range=(0, 255))
     batch =  np.array(batch, dtype=np.uint8)
-    ort_session = onnxruntime.InferenceSession(onnx_model_path)
 
     sam.to(device=device)
     predictor = SamPredictor(sam)
@@ -336,6 +243,10 @@ def predict_tree_crowns_legacy(batch, input_points, neighbors = 4,
             input_label = [0,0,0,0,1]
             target_points = np.array([cardinal_points_1[it], cardinal_points_2[it], cardinal_points_3[it], cardinal_points_4[it], centers[it]])
             target_box = transformed_boxes_batch[it].copy()
+            if rgb == True:
+                target_box = target_box*10
+                target_points = target_points*10
+                
             masks,scores, logits = predictor.predict(
                 point_coords=target_points,
                 point_labels=input_label,
@@ -356,7 +267,7 @@ def predict_tree_crowns_legacy(batch, input_points, neighbors = 4,
             target_itc = centers[it].copy()
             # Calculate the convex hull
             if rgb:
-                target_itc = target_itc/10 
+                target_itc = target_itc*10 
 
             individual_point = Point(target_itc)
             polygons = mask_to_delineation(masks.copy(), rgb=rgb)
@@ -378,22 +289,22 @@ def predict_tree_crowns_legacy(batch, input_points, neighbors = 4,
 
     if input_boxes is None or mode == 'only_points':# and onnx_model_path is None:
         #loop through each stem point, make a prediction, and save the prediction
-        for it in range(0, input_point.shape[0]):
+        if rgb == True:
+            input_point[:,0] = input_point[:,0] * 10 
+            input_point[:,1] = input_point[:,1] * 10 
+            grid_size = grid_size * 10
+
+        for it in range(1726, input_point.shape[0]):
             #update input_label to be 0 everywhere except at position it       
             input_label = np.zeros(input_point.shape[0])
             input_label[it] = 1
             target_itc = input_point[it].copy()
 
-            if rgb == True:
-                target_itc[0] = target_itc[0] *10
-                target_itc[1] = target_itc[1] *10
-
-            # subset the input_points to be the current point and the 10 closest points
             # Calculate the Euclidean distance between the ith row and the other rows
             distances = np.linalg.norm(input_point - input_point[it], axis=1)
             if point_type == "distance":
-            # Find the indices of the 10 closest rows
-                closest_indices = np.argpartition(distances, neighbors+1)[:neighbors+1]  # We use 11 because the row itself is included
+                # using distance, get the indexes of input_points, ordered by distances
+                closest_indices = np.argsort(distances)[1:neighbors+1]
             # find the 4 closest points one in each cardinal direction
             elif point_type == "cardinal":
                 closest_indices = np.argpartition(distances, 4)[:4]
@@ -441,8 +352,12 @@ def predict_tree_crowns_legacy(batch, input_points, neighbors = 4,
                 points.append([max(x - grid_size, 0), y])
 
                 points = np.array(points)[:neighbors,:]
+            else:
+                # define points as the index of all the points in the  input_point but input_point[it]
+                closest_indices = np.delete(np.arange(input_point.shape[0]), it)
 
             # Subset the array to the ith row and the 10 closest rows
+
             if point_type != "grid":
                 subset_point = input_point[closest_indices].copy()
                 subset_label = input_label[closest_indices]
@@ -452,31 +367,38 @@ def predict_tree_crowns_legacy(batch, input_points, neighbors = 4,
                 subset_label = np.append(subset_label, 1)
             else:
                 subset_point = points.copy()
-                subset_label = np.ones(points.shape[0], dtype=np.int8)
+                subset_label = np.zeros(points.shape[0], dtype=np.int8)
                 #append subset_point with the target point
                 subset_point = np.vstack((subset_point, target_itc))
                 subset_label = np.append(subset_label, 1)
 
-            #FROM HERE: IF USING ONNX 
-            # #Add a batch index, concatenate a padding point, and transform.
-            onnx_coord = np.concatenate([subset_point, np.array([[0.0, 0.0]])], axis=0)[None, :, :]
-            onnx_label = np.concatenate([subset_label, np.array([-1])], axis=0)[None, :].astype(np.float32)
-            onnx_coord = predictor.transform.apply_coords(onnx_coord, batch.shape[:2]).astype(np.float32)
-            # Create an empty mask input and an indicator for no mask.
-            onnx_mask_input = np.zeros((1, 1, 256, 256), dtype=np.float32)
-            onnx_has_mask_input = np.zeros(1, dtype=np.float32)
-            #Package the inputs to run in the onnx model
-            ort_inputs = {
-                "image_embeddings": image_embedding,
-                "point_coords": onnx_coord.astype(np.float32),
-                "point_labels": onnx_label,
-                "mask_input": onnx_mask_input,
-                "has_mask_input": onnx_has_mask_input,
-                "orig_im_size": np.array(batch.shape[:2], dtype=np.float32)
-            }
-            masks, scores, logits = ort_session.run(None, ort_inputs)
-            masks = masks > predictor.model.mask_threshold
+            # set up a bounding box around the target point
+            min_x = np.min(subset_point[:,0])
+            max_x = np.max(subset_point[:,0])
+            min_y = np.min(subset_point[:,1])
+            max_y = np.max(subset_point[:,1])
 
+            subset_point = np.vstack((subset_point, [0.0, 0.0]))
+            subset_label = np.append(subset_label, -1)
+            # Create an empty mask input and an indicator for no mask.
+            #mask_input = np.zeros((1, 1, 256, 256), dtype=np.float32)
+
+            target_bbox = np.array([[min_x, min_y, max_x, max_y]])
+            masks, scores, logits  = predictor.predict(
+                point_coords=subset_point,
+                point_labels=subset_label,
+                box=target_bbox,
+                multimask_output=True,
+            )
+            '''
+            mask_input = logits[np.argmax(scores), :, :]  # Choose the model's best mask
+            masks, scores, _  = predictor.predict(
+                point_coords=subset_point,
+                point_labels=subset_label,
+                mask_input=mask_input[None, :, :],
+                multimask_output=False,
+            )
+            '''
             #uncomment if getting rid of ONNX
             '''
             masks, scores, logits = predictor.predict(
@@ -490,20 +412,35 @@ def predict_tree_crowns_legacy(batch, input_points, neighbors = 4,
             if len(masks) > 1:
                 masks = masks[scores.argmax()]
                 scores = scores[scores.argmax()]
+            else:
+                masks = masks[0]
+                scores = scores[0]
             # Find the indices of the True values
-            true_indices = np.argwhere(masks[0,0,:,])
+            true_indices = np.argwhere(masks)
             #skip empty masks
             if true_indices.shape[0] < 3:
                 continue
 
+            polygons = mask_to_delineation(mask = masks.copy(), center = target_itc,  buffer_size = 0)
+            #pick the polygon that intercepts with individual point
+
             # Calculate the convex hull
             if rgb:
                 target_itc = target_itc/10 
+                scaled_polygons = []
+                for poly in polygons:
+                    # divide all cooridnates of polygons by 10 to get meters
+                    x, y = poly.exterior.coords.xy
+                    # Divide each vertex coordinate by 10
+                    x = [coord / 10 for coord in x]
+                    y = [coord / 10 for coord in y]
+
+                    # Create a new polygon with the scaled coordinates
+                    tmp = Polygon(zip(x, y))
+                    scaled_polygons.append(tmp)
 
             individual_point = Point(target_itc)
-            polygons = mask_to_delineation(masks.copy(), individual_point, rgb=rgb)
-            #pick the polygon that intercepts with individual point
-            polygons = [poly for poly in polygons if poly.intersects(individual_point)]
+            polygons = [poly for poly in scaled_polygons if poly.intersects(individual_point)]
             if len(polygons) ==0:
                 continue
 
@@ -577,96 +514,73 @@ from rasterio.windows import Window
 from shapely.geometry import box
 from rasterio.warp import reproject, Resampling
 
+import geopandas as gpd
+import pandas as pd
+import rasterio
+from rasterio.windows import Window
+from shapely.geometry import box
 
-def upscale_array(array, reference_array, input_resolution, target_resolution):
-    height, width = reference_array.shape[1:]
-    src_transform = rasterio.Affine(input_resolution, 0, 0, 0, -input_resolution, 0)
-    dst_transform = rasterio.Affine(target_resolution, 0, 0, 0, -target_resolution, 0)
-    dst_shape = (array.shape[0], height, width)
-    dst_array = np.empty(dst_shape, dtype=array.dtype)
+import geopandas as gpd
+import pandas as pd
+import rasterio
+from rasterio.windows import Window
+from shapely.geometry import box
 
-    reproject(
-        array,
-        dst_array,
-        src_transform=src_transform,
-        dst_transform=dst_transform,
-        src_crs={'init': 'EPSG:4326'},
-        dst_crs={'init': 'EPSG:4326'},
-        resampling=Resampling.bilinear
-    )
-
-    return dst_array
-
-'''
-def transform_coordinates(geometry, x_offset, y_offset):
-    return geometry.translate(x_offset=-x_offset, y_offset=-y_offset)
-'''
-
-def split_image(image_file, hsi_img, itcs, bbox,  batch_size=40):
-    # Open the raster image
-
-
+def split_image(image_file, hsi_img, itcs, bbox, batch_size=40, buffer_distance=10):
     with rasterio.open(image_file) as src:
-        # Get the height and width of the image in pixels
         height, width = src.shape
-        # Convert the batch size from meters to pixels
-        resolution =src.transform[0]
+        resolution = src.transform[0]
         batch_size_ = int(batch_size / resolution)
-        # Initialize lists to store the raster batches and clipped GeoDataFrames
         
+    buffer_distance_ = int(buffer_distance)
+
     raster_batches = []
     hsi_batches = []
     itcs_batches = []
     affines = []
     itcs_boxes = []
-    dbox= []
-    # Loop through the rows and columns of the image
+    dbox = []
+
     for i in range(0, height, batch_size_):
         for j in range(0, width, batch_size_):
-            # Define a window for the current batch
-            window = Window(col_off=j, row_off=i, width=batch_size_, height=batch_size_)
 
-            # Read the batch from the raster image
+            # get larger j and i
+            i_ = max(0, i - buffer_distance_)
+            j_ = max(0, j - buffer_distance_)
+            i_ = min(height, i_)
+            j_ = min(width, j_)
+
+            # make sure +2*buffer_distance_ doesn't make the batch size  larger than the image size
+            wdt = min(batch_size_+2*buffer_distance_, width-j_)
+            hgt = min(batch_size_+2*buffer_distance_, height-i_)
+            window = Window(col_off=j_, row_off=i_, width=wdt, height=hgt)
+
             with rasterio.open(image_file) as src:
                 batch = src.read(window=window)
-                # Append the raster batch to the list
                 raster_batches.append(batch)
-                # Convert the window to geospatial coordinates
-                left, top = src.xy(i, j)
-                right, bottom = src.xy(i+batch_size_, j+batch_size_)
-                batch_bounds = box(left, bottom, right, top)
+                
+                left, top = src.xy(i_, j_)
+                right, bottom = src.xy(i_ + wdt, j_ + hgt)
+                batch_bounds = box(left , bottom , right , top )
 
-                #rasterio load hsi_img only within the bounds of batch_bounds
             with rasterio.open(hsi_img) as hsi: 
                 resolution_hsi = hsi.transform[0]
-                #modify window to account for hsi resolution
-                resolution_factor =  resolution_hsi /resolution 
+                resolution_factor =  resolution_hsi / resolution 
                 batch_size_hsi = round(batch_size_ / resolution_factor)
                 hsi_height, hsi_width = hsi.shape
-                window_hsi = Window(col_off=j/resolution_factor, row_off=i/resolution_factor, width=batch_size_hsi, height=batch_size_hsi)
+                window_hsi = Window(col_off=j_ / resolution_factor, row_off=i_ / resolution_factor, 
+                            width=wdt/resolution_factor, height=hgt/resolution_factor)
                 hsi_batch = hsi.read(window=window_hsi)
+                hsi_batches.append(hsi_batch)
 
-            # upscale hsi_batch to the same size as batch
-            #hsi_batch = upscale_array(hsi_batch, batch, resolution_hsi, resolution)
-
-            hsi_batches.append(hsi_batch)
-
-            # Clip the GeoDataFrame using the batch bounds
             itcs_clipped = gpd.clip(itcs, batch_bounds)
-
-            # Transform the coordinates relative to the raster batch's origin
             itcs_clipped["geometry"] = itcs_clipped["geometry"].apply(
                 transform_coordinates, x_offset=left, y_offset=bottom
             )
-            bbox_clipped = bbox
-            #from bboxes, clip only those whose xmin, ymin, xmax, ymax fit within the batch bounds
-            bbox_clipped = gpd.clip(bbox_clipped, batch_bounds)
 
-
-            #remove boxes that are LINESTRING or POINT
+            bbox_clipped = gpd.clip(bbox, batch_bounds)
             bbox_clipped = bbox_clipped[bbox_clipped.geometry.type == 'Polygon']
 
-            # Create a new DataFrame with stemTag, x, and y columns
             itcs_df = pd.DataFrame(
                 {
                     "StemTag": itcs_clipped["StemTag"],
@@ -674,20 +588,15 @@ def split_image(image_file, hsi_img, itcs, bbox,  batch_size=40):
                     "y": itcs_clipped["geometry"].y,
                 }
             )
-            # Create a new DataFrame with label, x, and y columns from bbox_clipped
-            # Extract the bounding box coordinates for each polygon
-            resolution_factor = resolution/ resolution_hsi
 
             tmp_bx = []
-            left, bottom, right, top =  batch_bounds.bounds
+            left, bottom, right, top = batch_bounds.bounds
             for rows in range(bbox_clipped.shape[0]):
-                #from the polygon geometry, get xmin, xmax, ymin, ymax relative to image_rgb left, bottom, right, top
-
                 bounds = bbox_clipped.geometry.bounds.iloc[rows]
-                bbox_clipped['xmin'] = bounds['minx']-left 
-                bbox_clipped['ymin'] = bounds['miny']-bottom
-                bbox_clipped['xmax'] = bounds['maxx']-left
-                bbox_clipped['ymax'] = bounds['maxy']-bottom
+                bbox_clipped['xmin'] = bounds['minx'] - left 
+                bbox_clipped['ymin'] = bounds['miny'] - bottom
+                bbox_clipped['xmax'] = bounds['maxx'] - left
+                bbox_clipped['ymax'] = bounds['maxy'] - bottom
                 bleft = bbox_clipped['xmin'].values[0] 
                 bbottom = bbox_clipped['ymin'].values[0] 
                 bright = bbox_clipped['xmax'].values[0] 
@@ -711,5 +620,69 @@ def get_bbox_diff(bbox_clipped, tmp_bx):
     bbox_diff = tmp_bx - bbox_clipped[['xmin', 'ymin', 'xmax', 'ymax']].values
 
 
+from multiprocessing import Pool
+
+def create_polygon(category, category_mask, offset_x, offset_y):
+    polygons = []
+    # Create a binary mask for the current category
+    binary_mask = (category_mask == category).astype(np.uint8)
+    # Convert binary_mask to 8-bit single-channel image
+    binary_mask = (binary_mask * 255).astype(np.uint8)
+    # Find contours of the binary mask
+    contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    # use a concave hull instead
+    #contours = [cv2.convexHull(contour) for contour in contours]
+    # if the data is rgb, rescale to meters by dividing by 10 each index
+    # skip if does not have enough dimensions
+    if contours and contours[0].shape[0] >= 3:
+        # Convert the contours to polygons
+        for contour in contours:
+            # Simplify the contour to a polygon
+            poly = Polygon(shell=contour.squeeze())
+            # shift polygons coordinates to the position before clipping labelled mask
+            poly = translate(poly, xoff=offset_x, yoff=offset_y)
+            polygons.append(poly)
+
+    return polygons
 
 
+def mask_to_delineation(mask, center, rgb = True, buffer_size = 0):
+
+    labeled_mask = label(mask, connectivity=1)
+    # if 3d flatten to 2d
+    if len(labeled_mask.shape) == 3:
+        labeled_mask=labeled_mask[0,:,:]
+
+    # Compute the smallest region containing all non-zero values
+    non_zero_indices = np.nonzero(labeled_mask)
+    min_x, min_y = np.min(non_zero_indices, axis=1)
+    max_x, max_y = np.max(non_zero_indices, axis=1)
+    # Define the center of the smallest region
+
+    if buffer_size is not None:
+        #identify buffer around the target to dramatically increase efficency
+        submask = labeled_mask[int(min_x):int(max_x), int(min_y):int(max_y)]
+    else:
+        submask = labeled_mask
+
+    # Create a dictionary with as many values as unique values in the labeled mask
+    unique_labels = np.unique(submask)
+    label_to_category = {label: category for label, category in zip(unique_labels, range(unique_labels.shape[0]))}
+
+    category_mask = np.vectorize(label_to_category.get)(submask)
+    
+    # Turn each category into a polygon
+    polygons = []
+    for category in np.unique(category_mask):
+        if category == 0:  # Skip the background
+            continue
+        # Create a binary mask for the current category
+        poly = create_polygon(category, category_mask, min_y, min_x)
+        polygons.append(poly)
+    # flatten the list of lists
+    polygons = [item for sublist in polygons for item in sublist]
+    #check that center is in the polygon
+    polygons = [poly for poly in polygons if poly.contains(Point(center))]
+
+    return polygons
