@@ -294,7 +294,7 @@ def predict_tree_crowns(batch, input_points, neighbors = 3,
             input_point[:,1] = input_point[:,1] * 10 
             grid_size = grid_size * 10
 
-        for it in range(1726, input_point.shape[0]):
+        for it in range(1973, input_point.shape[0]):
             #update input_label to be 0 everywhere except at position it       
             input_label = np.zeros(input_point.shape[0])
             input_label[it] = 1

@@ -31,7 +31,7 @@ stem_path = 'Stems/SERC_stems_legacy.gpkg'
 stem_path = 'Stems/SERC_reprojected_legacy.gpkg'
 hsi_img  = 'Imagery/SERC/HSI_364000_4305000.tif'
 laz_path = 'Imagery/SERC/LAS_364000_4305000.laz'
-crowns = 'indir/SERC/itcs_combined.gpkg'
+crowns = '/media/smarconi/Gaia/Macrosystem_2/NEON_processed/Crowns/bboxesSERC_0.gpkg'
 boxes_pt = "/media/smarconi/Gaia/Macrosystem_2/legacy_polygons/dp_SERC_.gpkg"
 folder = 'Crowns'
 require_alignment = True
@@ -177,16 +177,3 @@ def __main__(get_clips = False, noGUI = True):
 
     return(model)
 
-from shapely.geometry import GeometryCollection, LineString
-
-def remove_linestring_from_geometrycollection(geometry_collection):
-    if not isinstance(geometry_collection, GeometryCollection):
-        raise ValueError("Input should be a shapely GeometryCollection.")
-
-    # Filter out LINESTRING geometries
-    filtered_geometries = [geom for geom in geometry_collection if not isinstance(geom, LineString)]
-
-    # Create a new GeometryCollection without LINESTRING geometries
-    new_geometry_collection = GeometryCollection(filtered_geometries)
-
-    return new_geometry_collection
