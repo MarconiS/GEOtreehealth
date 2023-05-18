@@ -68,6 +68,10 @@ import imageio
 import deepforest
 from PIL import Image
 from scipy.ndimage import zoom
+import os
+import requests
+import config
+
 
 def mask_to_polygons(mask, individual_point):
     # Find contours in the mask
@@ -115,6 +119,22 @@ def predict_tree_crowns(batch, input_points, neighbors = 3,
                         rescale_to = None, mode = 'only_points', rgb = True,
                         sam_checkpoint = "../tree_mask_delineation/SAM/checkpoints/sam_vit_h_4b8939.pth",
                         model_type = "vit_h", grid_size = 6):
+
+    if not os.path.exists(sam_checkpoint):
+        response = requests.get(config.url, stream=True)
+        if not os.path.exists('checkpoints'):
+            # Create the folder
+            os.mkdir('checkpoints')
+
+        if response.status_code == 200:
+            with open(sam_checkpoint, "wb") as file:
+                for chunk in response.iter_content():
+                    file.write(chunk)
+            print("File downloaded successfully.")
+        else:
+            print("Failed to download the file.")
+    else:
+        print("File already exists in the target folder.")
 
     #from tree_health_detection.src.get_itcs_polygons import mask_to_delineation
     from skimage import exposure

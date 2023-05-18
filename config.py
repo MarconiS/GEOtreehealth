@@ -23,8 +23,9 @@ mode = 'only_points'
 point_type = "grid"
 siteID = "SERC"
 ttops = 'deepforest' # or lidR. For lidR, you need to install it and run the R script separately
-sam_checkpoint = "SAM/checkpoints/sam_vit_h_4b8939.pth"
+sam_checkpoint = "checkpoints/sam_vit_h_4b8939.pth"
 model_type = "vit_h"
+url = url = "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth"
 
 grid_space = 20
 grid_size = 6 # meters from which set u the negative point mask
