@@ -23,7 +23,7 @@ mode = 'only_points'
 point_type = "grid"
 siteID = "SERC"
 ttops = 'deepforest' # or lidR. For lidR, you need to install it and run the R script separately
-sam_checkpoint = "../tree_mask_delineation/SAM/checkpoints/sam_vit_h_4b8939.pth"
+sam_checkpoint = "SAM/checkpoints/sam_vit_h_4b8939.pth"
 model_type = "vit_h"
 
 grid_space = 20
