@@ -34,11 +34,7 @@ import numpy as np
 import cv2
 import matplotlib.pyplot as plt
 from segment_anything import sam_model_registry, SamPredictor
-from segment_anything.utils.onnx import SamOnnxModel
 
-import onnxruntime
-from onnxruntime.quantization import QuantType
-from onnxruntime.quantization.quantize import quantize_dynamic
 import numpy as np
 from shapely.geometry import Polygon
 from shapely.ops import polygonize
