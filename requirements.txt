@@ -25,7 +25,7 @@ segment_anything==1.0
 segment_anything_py==1.0
 setuptools==67.7.2
 Shapely==2.0.1
-scikit-image==9.5.0
+scikit-image==0.20.0
 timm==0.9.2
 torch==2.0.0
 torch_geometric==2.3.1
