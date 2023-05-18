@@ -29,7 +29,7 @@ from .model_architecture  import (
 
 
 from .main  import (
-    main,
+    __main__,
     stratified_subset_indices,
     linStretch
 )

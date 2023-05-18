@@ -298,4 +298,3 @@ def __main__():
     return(model)
 
 
-__main__()
