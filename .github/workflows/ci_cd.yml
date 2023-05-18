@@ -24,5 +24,5 @@ jobs:
     - name: Test with pytest and check coverage
       run: |
         pip install pytest coverage
-        coverage -m pytest tests/build_dataloaders_test.py
+        coverage run -m pytest tests/build_dataloaders_test.py
         coverage html
