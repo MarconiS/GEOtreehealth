@@ -112,7 +112,7 @@ def mask_to_polygons(mask, individual_point):
 # Define a function to make predictions of tree crown polygons using SAM
 def predict_tree_crowns(batch, input_points, neighbors = 3, 
                         input_boxes = None, point_type='grid', 
-                        onnx_model_path = None,  rescale_to = None, mode = 'only_points', rgb = True,
+                        rescale_to = None, mode = 'only_points', rgb = True,
                         sam_checkpoint = "../tree_mask_delineation/SAM/checkpoints/sam_vit_h_4b8939.pth",
                         model_type = "vit_h", grid_size = 6):
 
@@ -294,7 +294,7 @@ def predict_tree_crowns(batch, input_points, neighbors = 3,
             input_point[:,1] = input_point[:,1] * 10 
             grid_size = grid_size * 10
 
-        for it in range(1973, input_point.shape[0]):
+        for it in range(input_point.shape[0]):
             #update input_label to be 0 everywhere except at position it       
             input_label = np.zeros(input_point.shape[0])
             input_label[it] = 1
@@ -421,7 +421,7 @@ def predict_tree_crowns(batch, input_points, neighbors = 3,
             if true_indices.shape[0] < 3:
                 continue
 
-            polygons = mask_to_delineation(mask = masks.copy(), center = target_itc,  buffer_size = 0)
+            polygons = mask_to_delineation(mask = masks, center = target_itc,  buffer_size = 0)
             #pick the polygon that intercepts with individual point
 
             # Calculate the convex hull

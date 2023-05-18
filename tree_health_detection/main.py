@@ -27,27 +27,8 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-rgb_tile = 'indir/SERC/rgb_clip.tif'
-stem_path = 'indir/SERC/gradient_boosting_alignment.gpkg'
-hyperspectral_tile  = 'indir/SERC/hsi_clip.tif'
-las_file = 'indir/SERC/LiDAR.laz'
-crowns = 'Crowns/bboxesSERC_0.gpkg'
-SAM_outputs = '/home/smarconi/Documents/GitHub/tree_mask_delineation/outdir/itcs/backup/'
-root_dir = '/media/smarconi/Gaia/Macrosystem_2/NEON_processed/data/'
-# Paths to your datasets
-hsi_img  = 'Imagery/SERC/HSI_364000_4305000.tif'
-laz_path = 'Imagery/SERC/LAS_364000_4305000.laz'
-rgb_path = 'Imagery/SERC/RGB_364000_4305000.tif'
-data_path = '/media/smarconi/Gaia/Macrosystem_2/NEON_processed/'
-stem_path = 'Stems/SERC_stems_legacy.gpkg'
-store_clips = False
-response='Status'
-hsi_out_features = 512
-rgb_out_features = 1024
-lidar_out_features = 256
-in_channels = 6
-
-import numpy as np
+#import config.py
+import config
 
 def stratified_subset_indices(labels, subset_size):
     unique_labels, label_counts = np.unique(labels, return_counts=True)
@@ -65,48 +46,58 @@ def linStretch(input_img):
     return (input_img - img_min) / (img_max - img_min)
 
 
-def __main__(get_clips = False, noGUI = True):
-    if noGUI:
+def __main__():
+    if config.noGUI:
         import matplotlib
         matplotlib.use('Agg')
         
     #get the crowns that match with stem_path
-    if crowns is not None:
-        crowns = gpd.read_file(crowns)
+    if config.crowns is not None:
+        crowns = gpd.read_file(config.data_path + config.crowns + '/SAM_'+config.siteID+'.gpkg', driver='GPKG')
     else:
         #loop through geopackages in custom folder and append polygons in a unique geodataframe
-        crowns = gpd.GeoDataFrame()
-        for file in os.listdir(SAM_outputs):
-            if file.endswith('.gpkg'):
-                # skip file if empty
-                if os.stat(SAM_outputs + file).st_size == 0:
-                    continue
-  
-                crowns = pd.concat([crowns, gpd.read_file(SAM_outputs + file)],ignore_index=True)
-                crowns.to_file('indir/SERC/itcs.gpkg') 
+        if config.get_tree_crowns:
+            tree_delineation.build_data_schema()
+
+        else:
+            sub_seg_dir = os.path.join(config.data_path+'/Crowns/'+ config.siteID)
+            crowns = gpd.GeoDataFrame()
+            for file in os.listdir(sub_seg_dir):
+                if file.endswith('.gpkg'):
+                    # skip file if empty
+                    if os.stat(sub_seg_dir +'/'+ file).st_size == 0:
+                        continue
     
-    stem_positions = gpd.read_file(root_dir+stem_path)
+                    crowns = pd.concat([crowns, gpd.read_file(sub_seg_dir +'/'+ file)],ignore_index=True)
+            
+            crowns.to_file(config.data_path + config.crowns + '/SAM_'+config.siteID+'.gpkg', driver='GPKG') 
+
+        if crowns is None or crowns == []:
+            print("No tree crowns found. Please run tree_mask_delineation.py first. You can run it as a standalone or by setting get_tree_crown as True in config.py")
+            exit() 
+    
+    stem_positions = gpd.read_file(config.data_path+config.stem_path)
     if 'StemTag' not in crowns.columns:
         # left join crowns and stem_positions by StemTag, assigning a polygon to each stem
         stem_positions = gpd.sjoin(stem_positions, crowns, how="left", op='within')
 
     # if data storage required
-    if store_clips:
-        rgb_dir = root_dir / "rgb"
-        hsi_dir = root_dir / "hsi"
-        png_dir = root_dir / "png"
+    if config.store_clips:
+        rgb_dir = config.root_dir / "rgb"
+        hsi_dir = config.root_dir / "hsi"
+        png_dir = config.root_dir / "png"
 
-        lidar_dir = root_dir / "lidar"
-        polygon_mask_dir = root_dir / "polygon_mask"
-        labels_dir = root_dir / "labels"
+        lidar_dir = config.root_dir / "lidar"
+        polygon_mask_dir = config.root_dir / "polygon_mask"
+        labels_dir = config.root_dir / "labels"
 
         # Ensure that all directories exist
-        for dir in [root_dir, rgb_dir, hsi_dir, lidar_dir, polygon_mask_dir, labels_dir]:
+        for dir in [config.root_dir, rgb_dir, hsi_dir, lidar_dir, polygon_mask_dir, labels_dir]:
             dir.mkdir(parents=True, exist_ok=True)
 
         # Load your polygon data (GeoDataFrame)
-        gdf = gpd.read_file(data_path+crowns)
-        itcs = gpd.read_file( data_path+stem_path)
+        gdf = gpd.read_file(config.data_path+crowns)
+        itcs = gpd.read_file( config.data_path+config.stem_path)
 
         # select only the columns needed and turn into dataframe
         itcs = itcs[['StemTag','Crwnpst', 'SiteID','Species','DBH', 'Status', 'FAD']]
@@ -114,80 +105,13 @@ def __main__(get_clips = False, noGUI = True):
 
         # Process each polygon
         for idx, row in gdf.iterrows():
-            tree_health_detection.store_data_structures.process_polygon(polygon = row, root_dir = root_dir,  rgb_path = data_path+rgb_path, 
-                            hsi_path = data_path+hsi_img, 
-                            lidar_path = data_path+laz_path, polygon_id=  idx, itcs=itcs)
+            tree_health_detection.store_data_structures.process_polygon(polygon = row, root_dir = config.root_dir,  rgb_path = config.data_path+config.rgb_path, 
+                            hsi_path = config.data_path+hsi_img, 
+                            lidar_path = config.data_path+config.laz_path, polygon_id=  idx, itcs=itcs)
 
-
-
-    import matplotlib
-    from comet_ml import Experiment
-    from PIL import Image
-    from rasterio.windows import from_bounds
-    from sklearn.metrics import confusion_matrix
-    from sklearn.model_selection import train_test_split
-    from sklearn.preprocessing import LabelEncoder
-    from torch.utils.data import Dataset, DataLoader
-    from torchvision import transforms
-    from torchvision.utils import save_image
-    import comet_ml
-    import cv2
-    import geopandas as gpd
-    import laspy
-    import numpy as np
-    import os
-    import pandas as pd
-    import pickle
-    import rasterio
-    import torch
-    import matplotlib.pyplot as plt
-
-    import tree_delineation
-    import tree_health_detection
-    import field_data_alignment
-
-    import torch
-    import torch.nn as nn
-    import torch.optim as optim
-
-    from comet_ml import Experiment
-    from sklearn.metrics import confusion_matrix
-    from tempfile import NamedTemporaryFile
-    import matplotlib.pyplot as plt
-    import torchvision.transforms as transforms
-    import numpy as np
-
-    def linStretch(input_img):
-        img_min = input_img.min()
-        img_max = input_img.max()
-        return (input_img - img_min) / (img_max - img_min)
-
-    rgb_tile = 'indir/SERC/rgb_clip.tif'
-    stem_path = 'indir/SERC/gradient_boosting_alignment.gpkg'
-    hyperspectral_tile  = 'indir/SERC/hsi_clip.tif'
-    las_file = 'indir/SERC/LiDAR.laz'
-    crowns = 'Crowns/bboxesSERC_0.gpkg'
-    SAM_outputs = '/home/smarconi/Documents/GitHub/tree_mask_delineation/outdir/itcs/backup/'
-    root_dir = '/media/smarconi/Gaia/Macrosystem_2/NEON_processed/data/'
-    # Paths to your datasets
-    hsi_img  = 'Imagery/SERC/HSI_364000_4305000.tif'
-    laz_path = 'Imagery/SERC/LAS_364000_4305000.laz'
-    rgb_path = 'Imagery/SERC/RGB_364000_4305000.tif'
-    data_path = '/media/smarconi/Gaia/Macrosystem_2/NEON_processed/'
-    stem_path = 'Stems/SERC_stems_legacy.gpkg'
-    store_clips = False
-    response='Status'
-    hsi_out_features = 512
-    rgb_out_features = 1024
-    lidar_out_features = 256
-    in_channels = 6
-    max_points = 3000
-    num_epochs = 20
-    batch_size = 32
     ### move to main script
-    # Read the csv file
     # list all files in folder data_pt
-    data_pt = root_dir +"labels/"
+    data_pt = config.root_dir +"labels/"
 
     files = os.listdir(data_pt)
     # llop through all files and append to a list
@@ -199,51 +123,45 @@ def __main__(get_clips = False, noGUI = True):
     labels_df = pd.concat(labels, ignore_index=True)
 
     # count the number of unique labels
-    rebalanced_to = labels_df[response].value_counts().min()
+    rebalanced_to = labels_df[config.response].value_counts().min()
 
     # downsample more frequent classes to balance dataset
-    labels_df = labels_df.groupby(response).apply(lambda x: x.sample(rebalanced_to)).reset_index(drop=True)
+    labels_df = labels_df.groupby(config.response).apply(lambda x: x.sample(rebalanced_to)).reset_index(drop=True)
 
     # if labels_df['response'] is character, convert it into a numeric class
-    if labels_df[response].dtype == 'object':
-        labels_df[response] = pd.factorize(labels_df[response])[0]
+    if labels_df[config.response].dtype == 'object':
+        labels_df[config.response] = pd.factorize(labels_df[config.response])[0]
 
     labels_df = labels_df.reset_index(drop=True)
     # Split the data into train-test-validation (70%-15%-15%) with stratification
-    train_data, temp_data = train_test_split(labels_df, test_size=0.3, random_state=42, stratify=labels_df[response])
-    test_data, val_data = train_test_split(temp_data, test_size=0.5, random_state=42, stratify=temp_data[response])
-
-    # from train_dataset, get the max size of the pointclod
- 
+    train_data, temp_data = train_test_split(labels_df, test_size=0.3, random_state=42, stratify=labels_df[config.response])
+    test_data, val_data = train_test_split(temp_data, test_size=0.5, random_state=42, stratify=temp_data[config.response]) 
 
     #reset index of train, validation, test
     train_data = train_data.reset_index(drop=True)
     test_data = test_data.reset_index(drop=True)
     val_data = val_data.reset_index(drop=True)
 
-
-    # self = MultiModalDataset(train_data)
-    train_dataset = tree_health_detection.MultiModalDataset(train_data, response=response, max_points=max_points)
-    test_dataset = tree_health_detection.MultiModalDataset(test_data, response=response, max_points=max_points)
-    val_dataset = tree_health_detection.MultiModalDataset(val_data, response=response, max_points=max_points)
+    train_dataset = tree_health_detection.MultiModalDataset(train_data, response=config.response, max_points=config.max_points)
+    test_dataset = tree_health_detection.MultiModalDataset(test_data, response=config.response, max_points=config.max_points)
+    val_dataset = tree_health_detection.MultiModalDataset(val_data, response=config.response, max_points=config.max_points)
 
     # Create the data loaders
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=config.batch_size, shuffle=False)
+    val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False)
  
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     #train model
-    # Define the model, loss function, and optimizer
     # from train_dataset, get the number of bands in a hsi image
     num_bands = train_dataset[0]['hsi'].shape[0]
     
     # from train_dataset, get the number of classes
-    num_classes = len(np.unique(train_data[response]))
+    num_classes = len(np.unique(train_data[config.response]))
  
-    model = tree_health_detection.MultiModalNet(in_channels, num_classes, num_bands,
-                 hsi_out_features, rgb_out_features, lidar_out_features)
+    model = tree_health_detection.MultiModalNet(config.in_channels, num_classes, num_bands,
+                 config.hsi_out_features, config.rgb_out_features, config.lidar_out_features)
     
     model.to(device)
 
@@ -253,10 +171,10 @@ def __main__(get_clips = False, noGUI = True):
 
     # Create an experiment with your api key
     #set up comet experiment
-    experiment = Experiment(project_name="treehealth", workspace="marconis")
+    experiment = Experiment(project_name=config.comet_name, workspace=config.comet_workspace)
     # Starting the experiment
 
-    for epoch in range(num_epochs):
+    for epoch in range(config.num_epochs):
         # Training
         model.train()
         running_loss = 0
@@ -321,7 +239,7 @@ def __main__(get_clips = False, noGUI = True):
         print(f'Epoch {epoch+1}, Accuracy: {100 * correct / total}%')
 
     # Transform function to resize the image
-    resize = transforms.Resize((40, 40))
+    resize = transforms.Resize((config.hsi_resize, config.hsi_resize))
 
     # Test Set Evaluation
     model.eval()
@@ -361,7 +279,7 @@ def __main__(get_clips = False, noGUI = True):
             ax[1].axis('off')
 
             # Save figure to a temporary file
-            with NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
+            with config.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
                 fig.savefig(temp_file.name, format='png')
 
             # Log Image to Comet.ml
@@ -379,3 +297,5 @@ def __main__(get_clips = False, noGUI = True):
 
     return(model)
 
+
+__main__()
