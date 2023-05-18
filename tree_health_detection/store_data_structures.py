@@ -1,8 +1,14 @@
 import geopandas as gpd
 from pathlib import Path
 import rasterio
+import numpy as np
 from rasterio.mask import mask
-
+import laspy
+import pandas as pd
+import numpy as np
+from PIL import Image, ImageDraw
+import rasterio
+from rasterio.mask import mask
 # Define your paths
  
 root_dir = Path('/media/smarconi/Gaia/Macrosystem_2/NEON_processed/data/')
@@ -52,12 +58,6 @@ def extract_data_cube(dataset_path, polygon, output_path, mask_path=None):
             #    mask_dest.write(binary_mask.astype('uint8'), indexes=1)
         return binary_mask
     
-import laspy
-import numpy as np
-
-import laspy
-import numpy as np
-
 def extract_data_cube_lidar(dataset_path, polygon, output_path):
     # Read the .laz file
     lidar = laspy.read(dataset_path)
@@ -84,10 +84,7 @@ def extract_data_cube_lidar(dataset_path, polygon, output_path):
     # Save the masked height map
     np.save(output_path, data)
 
-import numpy as np
-from PIL import Image, ImageDraw
-import rasterio
-from rasterio.mask import mask
+
 #background_mask = binary_mask.copy()
 def cumulative_linear_stretch(image, background_mask=None):
     if background_mask is not None:
@@ -151,19 +148,26 @@ def png_with_class(dataset_path, polygon, bool_mask, output_path, status_label):
         new_height = rgb_image.shape[0] *10
         pil_image = pil_image.resize((new_width, new_height))
         # Add text label on the image
-        draw = ImageDraw.Draw(pil_image)
-        text = status_label
-        text_color = (255, 255, 255)  # White color
-        text_position = (20, 20)  # Position of the text label
-        draw.text(text_position, text, fill=text_color)
+        #draw = ImageDraw.Draw(pil_image)
+        #text = status_label
+        #text_color = (255, 255, 255)  # White color
+        #text_position = (20, 20)  # Position of the text label
+        #draw.text(text_position, text, fill=text_color)
         # Save the modified image as PNG
         pil_image.save(output_path, format='PNG')
 
 
-
-
 # Function to process each polygon
-def process_polygon(polygon, rgb_path, hsi_path, lidar_path, polygon_id, itcs):
+def process_polygon(polygon, root_dir, rgb_path, hsi_path, lidar_path, polygon_id, itcs):
+
+    rgb_dir = root_dir / "rgb"
+    hsi_dir = root_dir / "hsi"
+    png_dir = root_dir / "png"
+
+    lidar_dir = root_dir / "lidar"
+    polygon_mask_dir = root_dir / "polygon_mask"
+    labels_dir = root_dir / "labels"
+
     # Extract and save data cubes
     extract_data_cube(dataset_path = rgb_path, polygon = polygon.geometry, output_path = rgb_dir / f"{polygon_id}.npy")
                       
@@ -184,24 +188,3 @@ def process_polygon(polygon, rgb_path, hsi_path, lidar_path, polygon_id, itcs):
     # save the label
     #label.to_csv(labels_dir / f"{polygon_id}.csv", index=False)
     
-
-# Paths to your datasets
-hsi_img  = 'Imagery/SERC/HSI_364000_4305000.tif'
-laz_path = 'Imagery/SERC/LAS_364000_4305000.laz'
-rgb_path = 'Imagery/SERC/RGB_364000_4305000.tif'
-
-#rgb_dataset_path = "/path/to/your/rgb/data"
-#hsi_dataset_path = "/path/to/your/hsi/data"
-#lidar_dataset_path = "/path/to/your/lidar/data"
-itcs = gpd.read_file( data_path+stem_path)
-
-# select only the columns needed and turn into dataframe
-itcs = itcs[['StemTag','Crwnpst', 'SiteID','Species','DBH', 'Status', 'FAD']]
-itcs = pd.DataFrame(itcs)
-
-
-# Process each polygon
-for idx, row in gdf.iterrows():
-    process_polygon(polygon = row, rgb_path = data_path+rgb_path, 
-                    hsi_path = data_path+hsi_img, 
-                    lidar_path = data_path+laz_path, polygon_id=  idx, itcs=itcs)

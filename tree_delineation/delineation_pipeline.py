@@ -69,6 +69,7 @@ hsi_img  = 'imagery/HSI_364000_4305000.tif'
 laz_path = 'imagery/LAS_364000_4305000.laz'
 grid_space = 20
 area_threshold = 100
+siteID = "SERC"
 # Loop through the files in the folder
 #for file in os.listdir(folder):
 # check if the tree_tops file exists. if not, launch get_tree_tops
@@ -158,7 +159,7 @@ def build_data_schema(data_path, stem_path,rgb_path,
         predictions['geometry'] = predictions['geometry'].simplify(0.1)
         predictions['geometry'] = predictions['geometry'].buffer(0)
         # Save the predictions as geopandas
-        predictions.to_file(f'{data_path}/Crowns/bboxes{i}.gpkg', driver='GPKG')
+        predictions.to_file(f'{data_path}/Crowns/bboxes{siteID}_{i}.gpkg', driver='GPKG')
         # merge polygons that overlap more than 50%
 
     return predictions
