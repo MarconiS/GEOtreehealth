@@ -218,7 +218,6 @@ def knn(x, k):
     return idx
 
 
-
 class TransformNet(nn.Module):
     def __init__(self, in_channels=6):
         super(TransformNet, self).__init__()
@@ -259,7 +258,6 @@ class TransformNet(nn.Module):
         x = x + iden
         x = x.view(-1, self.in_channels, self.in_channels)
         return x
-
 
 
 class EdgeConv(nn.Module):
@@ -326,4 +324,48 @@ class DGCNN(nn.Module):
         return x
 
 
-# Then you can include DGCNN in your MultiModalNet as self.lidar_branch
+class MultiModalMultiTaskNet(nn.Module):
+    def __init__(self, in_channels, num_classes, num_bands, num_sites,
+                 hsi_out_features, rgb_out_features, lidar_out_features):
+        super(MultiModalMultiTaskNet, self).__init__()
+        self.num_bands= num_bands
+        self.hsi_out_features = hsi_out_features
+        self.rgb_out_features = rgb_out_features
+        self.lidar_out_features = lidar_out_features
+        self.num_classes = num_classes
+        self.num_sites = num_sites
+
+        # 1. HSI branch: Spectral Attention Network
+        self.hsi_branch = SpectralAttentionNetwork(num_bands, hsi_out_features)
+        
+        # 2. RGB branch: Spatial Attention + Hybrid Visual Transformer
+        self.rgb_branch = HybridViTWithAttention(num_classes=rgb_out_features)
+
+        # 3. LiDAR branch: DGCNN
+        self.lidar_branch = DGCNN(in_channels, lidar_out_features)
+
+        # Define the fully connected layer for each site
+        num_features = hsi_out_features + rgb_out_features + lidar_out_features
+        self.fc = nn.ModuleList([nn.Linear(num_features, num_classes) for _ in range(num_sites)])
+
+    def forward(self, hsi, rgb, lidar, siteID):
+        # Pass inputs through corresponding branches
+        hsi_out = self.hsi_branch(hsi)
+        rgb_out = self.rgb_branch(rgb)
+        lidar_out = self.lidar_branch(lidar)
+
+        # Use adaptive average pooling to handle different image sizes
+        hsi_out = nn.AdaptiveAvgPool2d((1,1))(hsi_out)
+        #lidar_out = torch.max(lidar_out, -1, keepdim=False)[0]  # apply global max pooling to lidar_out
+
+        # Flatten the outputs
+        hsi_out = hsi_out.view(hsi_out.size(0), -1)
+        lidar_out = lidar_out.view(lidar_out.size(0), -1)
+        
+        # Concatenate the outputs   
+        out = torch.cat((hsi_out, rgb_out, lidar_out), dim=1)
+
+        # Pass through final layer to make prediction
+        out = self.fc[siteID](out)
+
+        return out
