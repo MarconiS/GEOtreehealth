@@ -10,10 +10,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers import ViTImageProcessor, ViTForImageClassification
 import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.autograd import Variable
+import numpy as np
 
 import timm
 import torch.nn as nn
 
+import torch
+from torch.nn import Linear, ReLU, Dropout
+from torch.nn.functional import log_softmax, relu
 import torch
 from torch.nn import Sequential as Seq, Linear, ReLU
 import torch.nn.functional as F
@@ -35,37 +43,34 @@ class MultiModalNet(nn.Module):
         self.rgb_branch = HybridViTWithAttention(num_classes=rgb_out_features)
 
         # 3. LiDAR branch: DGCNN
-        #self.lidar_branch = DGCNN(in_channels, lidar_out_features) # to be implemented
-        
+        self.lidar_branch = DGCNN(in_channels, lidar_out_features)
+
         # Define the fully connected layer
-        num_features = hsi_out_features + rgb_out_features# + lidar_out_features
+        num_features = hsi_out_features + rgb_out_features + lidar_out_features
         self.fc = nn.Linear(num_features, num_classes)  # replace num_classes with the number of your classes
 
     def forward(self, hsi, rgb, lidar):
         # Pass inputs through corresponding branches
         hsi_out = self.hsi_branch(hsi)
         rgb_out = self.rgb_branch(rgb)
-        #lidar_out = self.lidar_branch(lidar)
+        lidar_out = self.lidar_branch(lidar)
 
         # Use adaptive average pooling to handle different image sizes
         hsi_out = nn.AdaptiveAvgPool2d((1,1))(hsi_out)
+        #lidar_out = torch.max(lidar_out, -1, keepdim=False)[0]  # apply global max pooling to lidar_out
+
         
         # Flatten the outputs
         hsi_out = hsi_out.view(hsi_out.size(0), -1)
-        #lidar_out = lidar_out.view(lidar_out.size(0), -1)
+        lidar_out = lidar_out.view(lidar_out.size(0), -1)
         
-        # Concatenate the outputs   ,lidar_out
-        out = torch.cat((hsi_out, rgb_out), dim=1)
+        # Concatenate the outputs   
+        out = torch.cat((hsi_out, rgb_out, lidar_out), dim=1)
 
         # Pass through final layer to make prediction
         out = self.fc(out)
 
         return out
-
-
-import torch
-from torch.nn import Linear, ReLU, Dropout
-from torch.nn.functional import log_softmax, relu
 
 
 class SpectralAttentionLayer(nn.Module):
@@ -126,7 +131,6 @@ class VisualTransformer(nn.Module):
 
     def forward(self, x):
         x = self.vit.get_intermediate_layers(x)
-        print(x)
         return x
 
 class HybridViTWithAttention(nn.Module):
@@ -170,43 +174,6 @@ class HybridViTWithAttention(nn.Module):
         return x
     
 
-
-
-class DGCNN(torch.nn.Module):
-    def __init__(self, k=20, output_channels=10):
-        super(DGCNN, self).__init__()
-        self.k = k
-        self.nn1 = torch.nn.Sequential(torch.nn.Linear(12, 64), torch.nn.ReLU(), torch.nn.Linear(64, 64), torch.nn.ReLU(), torch.nn.Linear(64, 128))
-        self.nn2 = torch.nn.Sequential(torch.nn.Linear(128, 128), torch.nn.ReLU(), torch.nn.Linear(128, 128), torch.nn.ReLU(), torch.nn.Linear(128, 256))
-        self.lin1 = torch.nn.Linear(256, 256)
-        self.lin2 = torch.nn.Linear(256, output_channels)
-
-    def forward(self, x, batch):
-        x = self.edge_conv(x, self.nn1)
-        x = self.edge_conv(x, self.nn2)
-        x = self.global_max_pool(x, batch)
-        x = torch.relu(self.lin1(x))
-        x = torch.nn.Dropout(p=0.5)(x)
-        x = self.lin2(x)
-        return torch.log_softmax(x, dim=-1)
-    
-    def edge_conv(self, x, nn):
-        row, col = torch.topk(x, self.k, dim=-1)
-        row, col = row.long(), col.long()  # explicitly cast to long
-        x = torch.cat([x[col], x[row]], dim=-1)
-        x = nn(x)
-        x, _ = torch.max(x, dim=-1)
-        return x
-
-
-    def global_max_pool(self, x, batch):
-        batch_size = torch.max(batch) + 1
-        index = torch.arange(batch.size(0), device=batch.device)
-        index = index + batch * batch_size
-        pooled = torch_scatter.scatter_max(x, index, dim=0)[0]
-        return pooled
-
-
 class SpatialAttention(nn.Module):
     def __init__(self, kernel_size=7):
         super(SpatialAttention, self).__init__()
@@ -232,9 +199,7 @@ class SpatialAttentionResnetTransformer(nn.Module):
     def forward(self, x):
         # Pass input through Visual Transformer
         x = self.vit(x)
-        print(x)
         x = x[0]  # unpack the tuple
-        print(x.shape)
 
         # Apply spatial attention to the output
         sa = self.spatial_attention(x)
@@ -243,3 +208,122 @@ class SpatialAttentionResnetTransformer(nn.Module):
         x = x * sa
 
         return x
+
+
+def knn(x, k):
+    inner = -2*torch.matmul(x.transpose(2, 1), x)
+    xx = torch.sum(x**2, dim=1, keepdim=True)
+    pairwise_distance = -xx - inner - xx.transpose(2, 1)
+    idx = pairwise_distance.topk(k=k, dim=-1)[1] 
+    return idx
+
+
+
+class TransformNet(nn.Module):
+    def __init__(self, in_channels=6):
+        super(TransformNet, self).__init__()
+        self.in_channels = in_channels  # define in_channels
+        self.conv1 = torch.nn.Conv1d(self.in_channels, 64, 1)
+        self.conv2 = torch.nn.Conv1d(64, 128, 1)
+        self.conv3 = torch.nn.Conv1d(128, 1024, 1)
+        self.fc1 = nn.Linear(1024, 512)
+        self.fc2 = nn.Linear(512, 256)
+        self.fc3 = nn.Linear(256, self.in_channels*self.in_channels)
+        self.relu = nn.ReLU()
+
+        self.bn1 = nn.BatchNorm1d(64)
+        self.bn2 = nn.BatchNorm1d(128)
+        self.bn3 = nn.BatchNorm1d(1024)
+        self.bn4 = nn.BatchNorm1d(512)
+        self.bn5 = nn.BatchNorm1d(256)
+        
+    def forward(self, x):
+        batch_size = x.size(0)
+
+        # Transpose the input tensor here
+        x = x.transpose(2, 1)
+
+        x = F.relu(self.bn1(self.conv1(x)))
+        x = F.relu(self.bn2(self.conv2(x)))
+        x = F.relu(self.bn3(self.conv3(x)))
+        x = torch.max(x, 2, keepdim=True)[0]
+        x = x.view(-1, 1024)
+
+        x = F.relu(self.bn4(self.fc1(x)))
+        x = F.relu(self.bn5(self.fc2(x)))
+        x = self.fc3(x)
+
+        iden = Variable(torch.from_numpy(np.eye(self.in_channels).flatten().astype(np.float32))).view(1, self.in_channels*self.in_channels).repeat(batch_size, 1)
+        if x.is_cuda:
+            iden = iden.cuda()
+        x = x + iden
+        x = x.view(-1, self.in_channels, self.in_channels)
+        return x
+
+
+
+class EdgeConv(nn.Module):
+    def __init__(self, in_channels, out_channels, k):
+        super(EdgeConv, self).__init__()
+        self.k = k
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.conv = nn.Sequential(
+            nn.Conv2d(2 * in_channels, out_channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(),
+            nn.Conv2d(out_channels, out_channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU())
+
+    def get_graph_feature(self, x):
+        idx = knn(x, k=self.k)
+        device = torch.device('cuda')
+        idx_base = torch.arange(0, self.batch_size, device=device).view(-1, 1, 1)*self.num_points
+        idx = idx + idx_base
+        idx = idx.view(-1)
+        x = x.transpose(2, 1).contiguous()
+        feature = x.view(self.batch_size*self.num_points, -1)[idx, :]
+        feature = feature.view(self.batch_size, self.num_points, self.k, self.in_channels) 
+        x = x.view(self.batch_size, self.num_points, 1, self.in_channels).repeat(1, 1, self.k, 1)
+        feature = torch.cat((feature-x, x), dim=3).permute(0, 3, 1, 2).contiguous()
+        return feature
+
+    def forward(self, x):
+        self.batch_size = x.size(0)
+        self.num_points = x.size(2)
+        x = self.get_graph_feature(x)
+        x = self.conv(x)
+        x = x.max(dim=-1, keepdim=False)[0]
+        return x
+    
+
+class DGCNN(nn.Module):
+    def __init__(self, in_channels, lidar_out_features, k=20):
+        super(DGCNN, self).__init__()
+        self.in_channels = in_channels
+        self.lidar_out_features = lidar_out_features
+        self.k = k
+        self.transform_net = TransformNet(in_channels)
+        self.edgeconv1 = EdgeConv(in_channels, 64, k)
+        self.edgeconv2 = EdgeConv(64, 128, k)
+        self.fc1 = nn.Linear(128, 512)
+        self.fc2 = nn.Linear(512, lidar_out_features)
+
+    # x = lidar.to(device) 
+    def forward(self, x):
+        # permute the dimensions to match the expected input shape
+        #
+        t = self.transform_net(x)
+        x = torch.bmm(x, t)
+        x = x.permute(0, 2, 1) # permute dimensions to be [batch_size, num_channels, num_points]
+        x = self.edgeconv1(x)
+        x = self.edgeconv2(x)
+        x = x.max(dim=2, keepdim=True)[0] # global max pooling
+        x = x.squeeze(-1) 
+        x = F.relu(self.fc1(x))
+        x = self.fc2(x)
+        return x
+
+
+# Then you can include DGCNN in your MultiModalNet as self.lidar_branch

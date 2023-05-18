@@ -59,6 +59,11 @@ def stratified_subset_indices(labels, subset_size):
         subset_indices.extend(label_indices[:subset_size])
     return subset_indices
 
+def linStretch(input_img):
+    img_min = input_img.min()
+    img_max = input_img.max()
+    return (input_img - img_min) / (img_max - img_min)
+
 
 def __main__(get_clips = False, noGUI = True):
     if noGUI:
@@ -145,6 +150,17 @@ def __main__(get_clips = False, noGUI = True):
     import torch.nn as nn
     import torch.optim as optim
 
+    from comet_ml import Experiment
+    from sklearn.metrics import confusion_matrix
+    from tempfile import NamedTemporaryFile
+    import matplotlib.pyplot as plt
+    import torchvision.transforms as transforms
+    import numpy as np
+
+    def linStretch(input_img):
+        img_min = input_img.min()
+        img_max = input_img.max()
+        return (input_img - img_min) / (img_max - img_min)
 
     rgb_tile = 'indir/SERC/rgb_clip.tif'
     stem_path = 'indir/SERC/gradient_boosting_alignment.gpkg'
@@ -165,8 +181,9 @@ def __main__(get_clips = False, noGUI = True):
     rgb_out_features = 1024
     lidar_out_features = 256
     in_channels = 6
-
-
+    max_points = 3000
+    num_epochs = 20
+    batch_size = 32
     ### move to main script
     # Read the csv file
     # list all files in folder data_pt
@@ -197,7 +214,13 @@ def __main__(get_clips = False, noGUI = True):
     test_data, val_data = train_test_split(temp_data, test_size=0.5, random_state=42, stratify=temp_data[response])
 
     # from train_dataset, get the max size of the pointclod
-    max_points = 1000
+ 
+
+    #reset index of train, validation, test
+    train_data = train_data.reset_index(drop=True)
+    test_data = test_data.reset_index(drop=True)
+    val_data = val_data.reset_index(drop=True)
+
 
     # self = MultiModalDataset(train_data)
     train_dataset = tree_health_detection.MultiModalDataset(train_data, response=response, max_points=max_points)
@@ -205,14 +228,12 @@ def __main__(get_clips = False, noGUI = True):
     val_dataset = tree_health_detection.MultiModalDataset(val_data, response=response, max_points=max_points)
 
     # Create the data loaders
-    batch_size = 32
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
  
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    num_epochs = 20
     #train model
     # Define the model, loss function, and optimizer
     # from train_dataset, get the number of bands in a hsi image
@@ -229,9 +250,6 @@ def __main__(get_clips = False, noGUI = True):
     # Set up loss function and optimizer
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
-
-    from comet_ml import Experiment
-    from sklearn.metrics import confusion_matrix
 
     # Create an experiment with your api key
     #set up comet experiment
@@ -263,87 +281,98 @@ def __main__(get_clips = False, noGUI = True):
         running_val_loss = 0
         val_preds = []
         val_labels = []
-        correct = 0
-        total = 0
-
-        for batch in val_loader:
-            hsi_ = batch['hsi'].float().to(device)
-            rgb_ = batch['rgb'].float().to(device)
-            lidar_ = batch['lidar'].float().to(device)
-            labels_ = batch['label'].long().to(device)
-            outputs = model(hsi_, rgb_, lidar_)
-            _, predicted = torch.max(outputs.data, 1)
-            val_loss = criterion(outputs, labels_)
-            running_val_loss += val_loss.item()
-            total += labels_.size(0)
-            correct += (predicted == labels_).sum().item()
-            val_preds.extend(predicted.cpu().numpy())
-            val_labels.extend(labels_.cpu().numpy())
-        
-            # Log validation loss
-            experiment.log_metric('val_loss', running_val_loss / len(val_loader), epoch=epoch)
-            # Log validation accuracy
-            experiment.log_metric('val_accuracy', 100 * correct / total, epoch=epoch)
-            # Log confusion matrix
-            val_preds.extend(predicted.cpu().numpy())
-            val_labels.extend(labels_.cpu().numpy())
-            c_matrix = confusion_matrix(val_labels, val_preds)
-            # Generate the class names (assumes that labels are integers starting from 0)
-            class_names = [str(i) for i in range(c_matrix.shape[0])]
-
-            # Convert the confusion matrix to the Comet.ml format
-            matrix = {}
-            for i, row in enumerate(c_matrix):
-                matrix[class_names[i]] = dict(zip(class_names, row.tolist()))
-
-            # Log the confusion matrix
-            experiment.log_confusion_matrix(matrix=c_matrix, labels=['A', 'AU', 'DS'])
-      
-        print(f'Epoch {epoch+1}, Accuracy: {100 * correct / total}%')
-
-        # Test Set Evaluation
-        model.eval()
-        test_preds = []
-        test_labels = []
-        matplotlib.use('Agg')
-
         with torch.no_grad():
             correct = 0
             total = 0
-            for batch in test_loader:
+
+            for batch in val_loader:
                 hsi_ = batch['hsi'].float().to(device)
                 rgb_ = batch['rgb'].float().to(device)
                 lidar_ = batch['lidar'].float().to(device)
                 labels_ = batch['label'].long().to(device)
                 outputs = model(hsi_, rgb_, lidar_)
                 _, predicted = torch.max(outputs.data, 1)
+                val_loss = criterion(outputs, labels_)
+                running_val_loss += val_loss.item()
                 total += labels_.size(0)
                 correct += (predicted == labels_).sum().item()
-                test_preds.extend(predicted.cpu().numpy())
-                test_labels.extend(labels_.cpu().numpy())
+                val_preds.extend(predicted.cpu().numpy())
+                val_labels.extend(labels_.cpu().numpy())
+            
+                # Log validation loss
+                experiment.log_metric('val_loss', running_val_loss / len(val_loader), epoch=epoch)
+                # Log validation accuracy
+                experiment.log_metric('val_accuracy', 100 * correct / total, epoch=epoch)
+                # Log confusion matrix
+                val_preds.extend(predicted.cpu().numpy())
+                val_labels.extend(labels_.cpu().numpy())
+                c_matrix = confusion_matrix(val_labels, val_preds)
+                # Generate the class names (assumes that labels are integers starting from 0)
+                class_names = [str(i) for i in range(c_matrix.shape[0])]
 
-            # Calculate test accuracy
-            test_accuracy = 100 * correct / total
+                # Convert the confusion matrix to the Comet.ml format
+                matrix = {}
+                for i, row in enumerate(c_matrix):
+                    matrix[class_names[i]] = dict(zip(class_names, row.tolist()))
 
-        # Log test accuracy
-        experiment.log_metric('test_accuracy', test_accuracy)
+                
+        # Log the confusion matrix
+        experiment.log_confusion_matrix(matrix=c_matrix, labels=['A', 'AU', 'DS'])
+        print(f'Epoch {epoch+1}, Accuracy: {100 * correct / total}%')
 
-        # Take a subset of RGB arrays stratified by labels
-        subset_size = 10  # Define the subset size
-        subset_indices = stratified_subset_indices(test_labels, subset_size)
-        subset_rgb = [rgb_[i] for i in subset_indices]
-        subset_labels = [test_labels[i] for i in subset_indices]
+    # Transform function to resize the image
+    resize = transforms.Resize((40, 40))
 
-        # Plot subset of RGB arrays in Comet.ml
-        fig, ax = plt.subplots(1, subset_size, figsize=(12, 3))
-        for i in range(subset_size):
-            ax[i].imshow(subset_rgb[i])
-            ax[i].axis('off')
-            ax[i].set_title(f"Label: {subset_labels[i]}")
-        plt.tight_layout()
-        experiment.log_figure(figure_name="Subset of Test Images", figure=plt)
-        plt.show()
+    # Test Set Evaluation
+    model.eval()
+    test_preds = []
+    test_labels = []
+    matplotlib.use('Agg')
+    with torch.no_grad():
+        correct = 0
+        total = 0
+        for batch in test_loader:
+            hsi_ = batch['hsi'].float().to(device)
+            rgb_ = batch['rgb'].float().to(device)
+            lidar_ = batch['lidar'].float().to(device)
+            labels_ = batch['label'].long().to(device)
+            outputs = model(hsi_, rgb_, lidar_)
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels_.size(0)
+            correct += (predicted == labels_).sum().item()
+            test_preds.extend(predicted.cpu().numpy())
+            test_labels.extend(labels_.cpu().numpy())
 
+        # Plotting RGB and HSI Images
+        for i in range(len(rgb_)):
+            fig, ax = plt.subplots(1, 2)
+
+            # Plot RGB Image
+            rgb_img = (rgb_[i].cpu()).permute(1, 2, 0).numpy()
+            ax[0].imshow(rgb_img)
+            ax[0].set_title(f'Prd: {test_preds[i]}' f', Obs: {test_labels[i]}')
+            ax[0].axis('off')
+
+            # Plot HSI Image
+            hsi_img = hsi_[i, [28, 87, 115]].permute(1, 2, 0).cpu().numpy()
+            hsi_img = linStretch(hsi_img)
+            ax[1].imshow(hsi_img)
+            ax[1].set_title(f'Prd: {test_preds[i]}' f', Obs: {test_labels[i]}')
+            ax[1].axis('off')
+
+            # Save figure to a temporary file
+            with NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
+                fig.savefig(temp_file.name, format='png')
+
+            # Log Image to Comet.ml
+            experiment.log_image(temp_file.name, image_format='png')
+
+
+        # Calculate test accuracy
+        test_accuracy = 100 * correct / total
+
+    # Log test accuracy
+    experiment.log_metric('test_accuracy', test_accuracy)
 
     # Ending the experiment
     experiment.end()

@@ -72,16 +72,20 @@ class MultiModalDataset(Dataset):
         img_masked[img_masked < 0] = 0
         img_masked[img_masked > 10000] = 10000
 
+        # remove bands that are water absorption bands [0:14,190:219, 274:320, 399:425]
+        bad_bands = np.concatenate([np.arange(0,14), np.arange(190,219), np.arange(274,320), np.arange(399,425)])  
+        img_masked = np.delete(img_masked, bad_bands, axis=0)
+
         # Calculate the L2 norm for each row
         l2_norms = np.linalg.norm(img_masked, axis=0)
 
         # Normalize each row
         img_masked = img_masked / l2_norms[None,:,:]
         img_masked[np.isnan(img_masked)] = 0
-        img_masked = (img_masked - img_masked.min()) / (img_masked.max() - img_masked.min()) * 255
+        img_masked = (img_masked - img_masked.min()) / (img_masked.max() - img_masked.min()) 
 
         # Create PIL image from numpy array
-        img_masked = img_masked.astype(np.uint8)
+        img_masked = img_masked.astype('float32')
 
         # create a 2 pixels wide padding only in dimensions 1 and 2 (height and width)
         img_masked = np.pad(img_masked, ((0,0),(2,2),(2,2)), 'constant', constant_values=0)
@@ -114,8 +118,10 @@ class MultiModalDataset(Dataset):
 
         # Resize the image to the expected model size and convert to tensor
         transform = transforms.Compose([
-            transforms.Resize((224, 224)),
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
             transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
         img_rgb = transform(img_rgb)
 
