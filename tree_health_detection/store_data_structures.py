@@ -57,6 +57,7 @@ def extract_data_cube(dataset_path, polygon, output_path, mask_path=None):
             #with rasterio.open(mask_path, "w", **out_meta) as mask_dest:
             #    mask_dest.write(binary_mask.astype('uint8'), indexes=1)
         return binary_mask
+
     
 def extract_data_cube_lidar(dataset_path, polygon, output_path):
     # Read the .laz file
