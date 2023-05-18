@@ -10,26 +10,6 @@ from PIL import Image, ImageDraw
 import rasterio
 from rasterio.mask import mask
 # Define your paths
- 
-root_dir = Path('/media/smarconi/Gaia/Macrosystem_2/NEON_processed/data/')
-rgb_dir = root_dir / "rgb"
-hsi_dir = root_dir / "hsi"
-png_dir = root_dir / "png"
-
-lidar_dir = root_dir / "lidar"
-polygon_mask_dir = root_dir / "polygon_mask"
-labels_dir = root_dir / "labels"
-
-# Ensure that all directories exist
-for dir in [root_dir, rgb_dir, hsi_dir, lidar_dir, polygon_mask_dir, labels_dir]:
-    dir.mkdir(parents=True, exist_ok=True)
-
-# Load your polygon data (GeoDataFrame)
-crowns = '/media/smarconi/Gaia/Macrosystem_2/NEON_processed/Crowns/bboxesSERC_0.gpkg'
-gdf = gpd.read_file(crowns)
-
-# Function to extract data cube
-from rasterio.mask import mask
 
 def extract_data_cube(dataset_path, polygon, output_path, mask_path=None):
     with rasterio.open(dataset_path) as src:
