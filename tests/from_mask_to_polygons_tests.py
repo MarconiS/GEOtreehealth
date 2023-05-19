@@ -1,6 +1,6 @@
 import unittest
 from shapely.geometry import Polygon
-from tree_delineation import remove_overlapping_polygons
+from tree_delineation.from_mask_to_polygons import remove_overlapping_polygons
 import geopandas as gpd
 import pandas as pd
 
