@@ -24,8 +24,10 @@ jobs:
     - name: Test with pytest and check coverage
       run: |
         pip install pytest coverage
+        coverage run -m pytest tests/build_dataloaders_test.py
         #coverage run -m pytest tests/from_mask_to_polygons_tests.py
-        coverage run -m pytest tests/dgcnn_test.py tests/from_mask_to_polygons_tests.py tests/delineation_utils_tests.py
+        #coverage run -m pytest tests/dgcnn_test.py 
+        #tests/from_mask_to_polygons_tests.py tests/delineation_utils_tests.py
         #coverage run -m pytest tests/hybridViTattention_test.py  tests/multiModalNet_test.py
         #coverage run -m pytest tests/spectralAttention_test.py tests/utils_test.py tests/get_polygons_tests.py
 

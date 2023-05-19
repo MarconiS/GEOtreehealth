@@ -1,0 +1,2 @@
+StemTag,Crwnpst,SiteID,Species,DBH,Status,FAD,polygon_id,rgb_path,hsi_path,lidar_path
+0,5,SERC,NONE,1,A,,0,tests/data/rgb/0.npy,tests/data/hsi/0.npy,tests/data/lidar/0.npy

@@ -6,7 +6,9 @@ import torch
 import os
 from PIL import Image
 from torchvision import transforms
-
+import config
+import numpy as np
+import cv2
 
 class MultiModalDataset(Dataset):
     def __init__(self, data, response, max_points):
@@ -25,7 +27,7 @@ class MultiModalDataset(Dataset):
         if torch.is_tensor(idx):
             idx = idx.tolist()
 
-        obj_name = self.data.iloc[idx, 0]
+        #obj_name = self.data.iloc[idx, 0]
         label = self.data.iloc[idx][self.response]
 
         hsi_path = os.path.join(self.data.iloc[idx]['hsi_path'][:-4]+ '.npy')
@@ -37,9 +39,9 @@ class MultiModalDataset(Dataset):
         lidar = np.load(lidar_path)
 
         # Pad images
-        max_shape = [426,40,40]
+        max_shape = [426,config.hsi_shape,config.hsi_shape]
         hsi = self.pad_image(hsi, max_shape)
-        max_shape = [3,400,400]
+        max_shape = [3,config.rgb_shape,config.rgb_shape]
         rgb = self.pad_image(rgb, max_shape)
 
         # Ensure lidar data has a fixed size
@@ -64,25 +66,17 @@ class MultiModalDataset(Dataset):
 
     def preprocess(self, img_masked):#, mask):
         # Normalize the image
-        #if mask is not None:
-        #    img_masked = img[mask > 0]  # Assuming mask has values of 0 and 1
-        #else:
-        #    img_masked = img
+        #    img_masked = hsi
 
         img_masked[img_masked < 0] = 0
         img_masked[img_masked > 10000] = 10000
 
         # remove bands that are water absorption bands [0:14,190:219, 274:320, 399:425]
-        bad_bands = np.concatenate([np.arange(0,14), np.arange(190,219), np.arange(274,320), np.arange(399,425)])  
+        bad_bands = np.concatenate([np.arange(0,14), np.arange(190,219), np.arange(274,320), np.arange(399,426)])  
         img_masked = np.delete(img_masked, bad_bands, axis=0)
-
         # Calculate the L2 norm for each row
-        l2_norms = np.linalg.norm(img_masked, axis=0)
-
-        # Normalize each row
-        img_masked = img_masked / l2_norms[None,:,:]
-        img_masked[np.isnan(img_masked)] = 0
-        img_masked = (img_masked - img_masked.min()) / (img_masked.max() - img_masked.min()) 
+        # Assuming `hyperspectral_data` is your hyperspectral data with shape (channels, height, width)
+        img_masked = self.normalize_hsi(img_masked)
 
         # Create PIL image from numpy array
         img_masked = img_masked.astype('float32')
@@ -110,20 +104,59 @@ class MultiModalDataset(Dataset):
 
     def preprocess_rgb(self, img_rgb):
         # Normalize the image
+        # img_rgb = rgb
         img_rgb[img_rgb < 0] = 0
         img_rgb[img_rgb > 255] = 255
 
-        # Create PIL image from numpy array
-        img_rgb = Image.fromarray(img_rgb.astype('uint8'), 'RGB')
+        # Step 1: Check if there are non-zero pixels outside the 224x224 top-left corner
+        non_zero_pixels = np.any(img_rgb[1,224:, :] != 0) or np.any(img_rgb[1,:, 224:] != 0)
 
-        # Resize the image to the expected model size and convert to tensor
-        transform = transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ])
-        img_rgb = transform(img_rgb)
+        # Step 2: If there are, resize the image so that all valid pixels fit within the 224x224 boundary
+        if non_zero_pixels:
+            # Find the largest non-zero pixel coordinate in the x and y directions
+            x_max, y_max = np.where(img_rgb[1,:,:] != 0)
+            max_coord = max(x_max.max(), y_max.max())
+
+            # Calculate the scaling factor required to fit these pixels into a 224x224 image
+            scale = 224 / (max_coord + 1)
+
+            # Resize the image, preserving all non-zero pixels
+            #img_rgb = cv2.resize(img_rgb, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+
+        # Step 3: Crop the top-left corner of the resized image to the required size
+        img_rgb = img_rgb[:, :224, :224]
+
+        # normalize the [3,224,224] over each channel (dim 0) using mean=[0.485, 0.456, 0.406] and std=[0.229, 0.224, 0.225]
+        img_rgb = img_rgb / 255.0
+        img_rgb[0,:,:] = (img_rgb[0,:,:] - 0.485) / 0.229
+        img_rgb[1,:,:] = (img_rgb[1,:,:] - 0.456) / 0.224
+        img_rgb[2,:,:] = (img_rgb[2,:,:] - 0.406) / 0.225
 
         return img_rgb
+    
+    # data = img_masked
+    def normalize_hsi(self, data):
+        # Transpose data to have shape (height, width, channels)
+        data = np.transpose(data, (1, 2, 0))
+        # calculate the l2 norm along the 0-th dimension
+        l2_norms = np.linalg.norm(data, axis=0)
+        # add a small constant to avoid division by zero
+        epsilon = 1e-8
+        # normalize
+        data = data / (l2_norms + epsilon)
+        # create a mask for values bigger than 0
+        mask = data > 0
+
+        # find the min value bigger than 0 for each band
+        min_vals = np.min(np.where(mask, data, np.inf), axis=(1, 2), keepdims=True)
+        max_vals = np.max(data, axis=(1, 2), keepdims=True)
+
+        # apply min-max scaling
+        x_scaled = (data - min_vals) / (max_vals - min_vals + epsilon)
+
+        mask_zero = data == 0
+        # set the values back to 0 where the initial data was 0
+        x_scaled = np.where(mask_zero, 0, x_scaled)
+
+        return x_scaled
 

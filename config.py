@@ -39,7 +39,6 @@ store_clips = False
 get_clips = False
 noGUI = True
 get_tree_crowns = False
-
 # Flags for segmentation
 isrgb = True
 
@@ -47,8 +46,8 @@ isrgb = True
 response = 'Status'
 
 # Hyperparameters
-hsi_out_features = 512
-rgb_out_features = 1024
+hsi_out_features = 256
+rgb_out_features = 256
 lidar_out_features = 256
 in_channels = 6
 max_points = 2000
@@ -59,3 +58,5 @@ batch_size = 32
 comet_name = "treehealth"
 comet_workspace = "marconis"
 hsi_resize = 20
+hsi_shape = 30
+rgb_shape = 300

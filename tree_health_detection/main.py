@@ -26,6 +26,7 @@ import field_data_alignment
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import tempfile
 
 #import config.py
 import config
@@ -44,6 +45,17 @@ def linStretch(input_img):
     img_min = input_img.min()
     img_max = input_img.max()
     return (input_img - img_min) / (img_max - img_min)
+
+
+def percentileStretch(img, low=2, high=98):
+    # Compute the percentiles
+    
+    low_p, high_p = np.percentile(img[img > 0], [low, high])
+    
+    # Stretch the image
+    img_stretched = np.clip((img - low_p) / (high_p - low_p), 0, 1)
+    
+    return img_stretched
 
 
 def __main__():
@@ -190,6 +202,8 @@ def __main__():
             loss.backward()
             optimizer.step()
             running_loss += loss.item()
+
+
         
         # Log training loss
         experiment.log_metric('train_loss', running_loss / len(train_loader), epoch=epoch)
@@ -245,7 +259,6 @@ def __main__():
     model.eval()
     test_preds = []
     test_labels = []
-    matplotlib.use('Agg')
     with torch.no_grad():
         correct = 0
         total = 0
@@ -261,6 +274,14 @@ def __main__():
             test_preds.extend(predicted.cpu().numpy())
             test_labels.extend(labels_.cpu().numpy())
 
+            #save hsi as raster
+            
+            #rgb_img = rgb.cpu().numpy()
+            # save hsi raster wuth rasterio
+            #with rasterio.open('rgb_img.tif', 'w', driver='GTiff', width=rgb_img.shape[1], height=rgb_img.shape[2], count=rgb_img.shape[0], dtype=rgb_img.dtype) as dst:
+            #    dst.write(rgb_img)
+
+
         # Plotting RGB and HSI Images
         for i in range(len(rgb_)):
             fig, ax = plt.subplots(1, 2)
@@ -273,18 +294,16 @@ def __main__():
 
             # Plot HSI Image
             hsi_img = hsi_[i, [28, 87, 115]].permute(1, 2, 0).cpu().numpy()
-            hsi_img = linStretch(hsi_img)
+            hsi_img = percentileStretch(hsi_img)
             ax[1].imshow(hsi_img)
             ax[1].set_title(f'Prd: {test_preds[i]}' f', Obs: {test_labels[i]}')
             ax[1].axis('off')
 
             # Save figure to a temporary file
-            with config.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
                 fig.savefig(temp_file.name, format='png')
-
-            # Log Image to Comet.ml
-            experiment.log_image(temp_file.name, image_format='png')
-
+                # Log Image to Comet.ml
+                experiment.log_image(temp_file.name, image_format='png')
 
         # Calculate test accuracy
         test_accuracy = 100 * correct / total
@@ -297,4 +316,5 @@ def __main__():
 
     return(model)
 
-
+if __name__ == '__main__':
+    __main__()

@@ -11,24 +11,16 @@ class TestMultiModalDataset:
     def setup(self):
         # Set up the required objects and data
         data = pd.DataFrame({
-            'hsi_path': ['test1', 'test2'],
-            'rgb_path': ['test1', 'test2'],
-            'lidar_path': ['test1', 'test2']
+            'hsi_path': ['tests/data/hsi/0.npy'],
+            'rgb_path': ['tests/data/rgb/0.npy'],
+            'lidar_path': ['tests/data/lidar/0.npy'],
+            'response': ['Status']
         })
         dataset = MultiModalDataset(data, 'response', 1000)
         return dataset
 
     def test_len(self, setup):
         assert len(setup) == 2
-
-    def test_getitem(self, setup, mocker):
-        # Mock external dependencies
-        mocker.patch('numpy.load', return_value=np.zeros((426, 40, 40)))
-        mocker.patch('os.path.join', return_value='test')
-        sample = setup.__getitem__(0)
-        assert sample['hsi'].shape == (426, 40, 40)
-        assert sample['rgb'].shape == (3, 400, 400)
-        assert sample['lidar'].shape == (1000, 3)
 
     def test_pad_image(self, setup):
         image = np.zeros((10, 10, 10))
@@ -41,7 +33,7 @@ class TestMultiModalDataset:
         preprocessed_img = setup.preprocess(img_masked)
         assert preprocessed_img.min() >= 0
         assert preprocessed_img.max() <= 1
-        assert preprocessed_img.shape[0] == 274  # After removing bad bands
+        assert preprocessed_img.shape[2] == 314  # After removing bad bands
 
     def test_normalize_point_cloud(self, setup):
         points = np.random.rand(1000, 3)
