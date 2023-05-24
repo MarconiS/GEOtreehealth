@@ -15,7 +15,7 @@ stem_path = 'Stems/SERC_stems_legacy.gpkg'
 #paths for segmentation
 folder = '../tree_mask_delineation/'
 seg_data_path = 'data/'
-seg_rgb_path = 'Imagery/SERC/RGB_364000_4305000.tif'
+seg_rgb_path = 'pansharpened/SERC/ForestGeo.tif' #'Imagery/SERC/RGB_364000_4305000.tif'
 seg_hsi_img  = 'Imagery/SERC/HSI_364000_4305000.tif'
 seg_laz_path = 'Imagery/SERC/LAS_364000_4305000.laz'
 legacy_polygons = 'dp_SCBI_DP1_747000_4309000_.gpkg'
@@ -28,14 +28,15 @@ model_type = "vit_h"
 url = url = "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth"
 
 grid_space = 20
-grid_size = 6 # meters from which set u the negative point mask
+grid_size = 4 # meters from which set u the negative point mask
 seg_img_batch = 400
 seg_img_buffer = 10
-neighbors =3
+neighbors =6
 rescale_to = None
 
 # Flags
 store_clips = False
+clean_dataset=False
 get_clips = False
 noGUI = True
 get_tree_crowns = False
@@ -46,12 +47,12 @@ isrgb = True
 response = 'Status'
 
 # Hyperparameters
-hsi_out_features = 256
+hsi_out_features = 512
 rgb_out_features = 256
-lidar_out_features = 256
+lidar_out_features = 128
 in_channels = 6
-max_points = 2000
-num_epochs = 20
+max_points = 100
+num_epochs = 15
 batch_size = 32
 
 #comet experiment

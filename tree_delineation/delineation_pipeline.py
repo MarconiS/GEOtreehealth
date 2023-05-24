@@ -85,6 +85,9 @@ def build_data_schema():
         bbox = gpd.GeoDataFrame(bbox, geometry='geometry')
         bbox["geometry"] = bbox["geometry"].apply(lambda geom: translate(geom, x_offset, y_offset))
         bbox.crs = rgb_crs
+        
+        #save the bounding boxes
+        bbox.to_file(os.path.join(config.data_path, '../legacy_polygons/DF'+config.legacy_polygons))
     
     elif config.ttops == 'lidR':
         bbox = gpd.read_file(os.path.join(config.data_path, '../legacy_polygons/'+config.legacy_polygons))
@@ -129,6 +132,10 @@ def build_data_schema():
         # Apply the translation to the geometries in the GeoDataFrame
         x_offset, y_offset = affine[i][2], affine[i][5]
         y_offset = y_offset - batch_size
+
+        itt = itcs[['StemTag','Status','Crwnpst']]
+        predictions = predictions.merge(itt, how='left', on='StemTag')
+
         #from a geopandas, remove all rows with a None geometry
         predictions = gpd.GeoDataFrame(predictions, geometry='geometry')
         predictions = predictions[predictions['geometry'].notna()]
@@ -141,12 +148,16 @@ def build_data_schema():
         #simplify geometries
         predictions['geometry'] = predictions['geometry'].simplify(0.1)
         predictions['geometry'] = predictions['geometry'].buffer(0)
+
         # Save the predictions as geopandas
         # check if path exists
         if not os.path.exists(os.path.join(config.data_path+'/Crowns/'+ config.siteID)):
             os.mkdir(os.path.join(config.data_path+'/Crowns/'+ config.siteID))
 
-        predictions.to_file(f'{config.data_path}/Crowns/{config.siteID}/SAM_{i}.gpkg', driver='GPKG')
+        predictions.to_file(f'{config.data_path}/Crowns/{config.siteID}/SAM_pp_{i}.gpkg', driver='GPKG')
+        # left join the predictions to the input points
+        #get only ['StemTag','Status','Crwnpst','geometry'] columns from itcs
+
 
     return predictions
 

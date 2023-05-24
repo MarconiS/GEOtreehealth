@@ -58,7 +58,10 @@ class MultiModalDataset(Dataset):
         hsi = self.preprocess(hsi) #, mask = None) #, np.load(mask_hsi_path))
         rgb = self.preprocess_rgb(rgb)#, mask = None) #, np.load(mask_rgb_path))
         lidar = self.normalize_point_cloud(lidar)
-        
+
+        # rearrange hsi from x,y, z to z,y,x
+        hsi = np.transpose(hsi, (2, 0, 1))
+
         sample = {'hsi': hsi, 'rgb': rgb, 'lidar': lidar,  'label': label}
 
         return sample

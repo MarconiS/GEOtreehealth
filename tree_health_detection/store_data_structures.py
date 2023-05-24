@@ -70,19 +70,22 @@ def extract_data_cube_lidar(dataset_path, polygon, output_path):
 def cumulative_linear_stretch(image, background_mask=None):
     if background_mask is not None:
         # Apply background mask
-        background_mask = background_mask.astype(np.bool)        
+        background_mask = background_mask.astype(bool)        
 
     # Apply cumulative linear stretch to each band
-    stretched_image = np.zeros_like(image, dtype=np.float)
+    stretched_image = np.zeros_like(image, dtype=np.float64)
     for band in range(3):
         # Select only the pixels where the mask is False for each band
-        band_image = image[:, :, band][background_mask == True]
+        if background_mask is not None:
+            band_image = image[:, :, band][background_mask == True]
+        else:
+            band_image = image[:, :, band]
+
         # Calculate minimum and maximum values
         min_value = np.min(band_image)
         max_value = np.max(band_image)
         # Apply linear stretch
         stretched_image[:, :, band] = (image[:, :, band] - min_value) / (max_value - min_value) * 255
-
 
     stretched_image[stretched_image <0] = 0
     # Convert to 8-bit unsigned integers (uint8)
@@ -117,37 +120,38 @@ def png_with_class(dataset_path, polygon, bool_mask, output_path, status_label):
         rgb_image[rgb_image < 0] = 0
         rgb_image[rgb_image > 10000] = 10000
 
-        # Normalize the image in range 0, 255
-        rgb_image = (rgb_image - rgb_image.min()) / (rgb_image.max() - rgb_image.min()) * 255
-        rgb_image = cumulative_linear_stretch(rgb_image, binary_mask)
+        if rgb_image.max() > 0:
+            # Normalize the image in range 0, 255
+            rgb_image = (rgb_image - rgb_image.min()) / (rgb_image.max() - rgb_image.min()) * 255
+            rgb_image = cumulative_linear_stretch(rgb_image, binary_mask)
 
-        # Create PIL image from numpy array
-        rgb_image = rgb_image.astype(np.uint8)
-        pil_image = Image.fromarray(rgb_image)
+            # Create PIL image from numpy array
+            rgb_image = rgb_image.astype(np.uint8)
+            pil_image = Image.fromarray(rgb_image)
 
-        new_width = rgb_image.shape[1] *10
-        new_height = rgb_image.shape[0] *10
-        pil_image = pil_image.resize((new_width, new_height))
-        # Add text label on the image
-        #draw = ImageDraw.Draw(pil_image)
-        #text = status_label
-        #text_color = (255, 255, 255)  # White color
-        #text_position = (20, 20)  # Position of the text label
-        #draw.text(text_position, text, fill=text_color)
-        # Save the modified image as PNG
-        pil_image.save(output_path, format='PNG')
+            new_width = rgb_image.shape[1] *10
+            new_height = rgb_image.shape[0] *10
+            pil_image = pil_image.resize((new_width, new_height))
+            # Add text label on the image
+            #draw = ImageDraw.Draw(pil_image)
+            #text = status_label
+            #text_color = (255, 255, 255)  # White color
+            #text_position = (20, 20)  # Position of the text label
+            #draw.text(text_position, text, fill=text_color)
+            # Save the modified image as PNG
+            pil_image.save(output_path, format='PNG')
 
 
 # Function to process each polygon
 def process_polygon(polygon, root_dir, rgb_path, hsi_path, lidar_path, polygon_id, itcs):
 
-    rgb_dir = root_dir / "rgb"
-    hsi_dir = root_dir / "hsi"
-    png_dir = root_dir / "png"
+    rgb_dir = Path(root_dir) / "rgb"
+    hsi_dir = Path(root_dir) / "hsi"
+    png_dir = Path(root_dir) / "png"
 
-    lidar_dir = root_dir / "lidar"
-    polygon_mask_dir = root_dir / "polygon_mask"
-    labels_dir = root_dir / "labels"
+    lidar_dir = Path(root_dir) / "lidar"
+    polygon_mask_dir = Path(root_dir) / "polygon_mask"
+    labels_dir = Path(root_dir) / "labels"
 
     # Extract and save data cubes
     extract_data_cube(dataset_path = rgb_path, polygon = polygon.geometry, output_path = rgb_dir / f"{polygon_id}.npy")
@@ -160,12 +164,12 @@ def process_polygon(polygon, root_dir, rgb_path, hsi_path, lidar_path, polygon_i
     label = itcs.loc[itcs['StemTag'] == polygon.StemTag] 
     # add polygon_id to the label and the path of the rgb, hsi and lidar extracted cubes
     label['polygon_id'] = polygon_id
-    label['rgb_path'] = rgb_dir / f"{polygon_id}.npy"
-    label['hsi_path'] = hsi_dir / f"{polygon_id}.npy"
-    label['lidar_path'] = lidar_dir / f"{polygon_id}.npy"
+    label['rgb_path'] = Path(rgb_dir) / f"{polygon_id}.npy"
+    label['hsi_path'] = Path(hsi_dir) / f"{polygon_id}.npy"
+    label['lidar_path'] = Path(lidar_dir) / f"{polygon_id}.npy"
     png_with_class(dataset_path = hsi_path, polygon = polygon.geometry, bool_mask = bool_mask,
                    output_path = png_dir / f"{label.Status.values[0]}_{polygon_id}.png", 
                    status_label = label.Status.values[0])
     # save the label
-    #label.to_csv(labels_dir / f"{polygon_id}.csv", index=False)
+    label.to_csv(labels_dir / f"{polygon_id}.csv", index=False)
     

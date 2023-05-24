@@ -143,7 +143,7 @@ def predict_tree_crowns(batch, input_points, neighbors = 3,
         input_boxes = input_boxes.astype(int)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
+    sam = sam_model_registry[config.model_type](checkpoint=config.sam_checkpoint)
 
     #neighbors must be the minimum between the total number of input_points and the argument neighbors
     #neighbors = min(input_points.shape[0]-2, neighbors)
@@ -675,7 +675,12 @@ def mask_to_delineation(mask, center, rgb = True, buffer_size = 0):
     min_x, min_y = np.min(non_zero_indices, axis=1)
     max_x, max_y = np.max(non_zero_indices, axis=1)
     # Define the center of the smallest region
+    if(max_x == min_x):
+        max_x = max_x + 1
 
+    if(max_y == min_y):
+        max_y = max_y + 1
+        
     if buffer_size is not None:
         #identify buffer around the target to dramatically increase efficency
         submask = labeled_mask[int(min_x):int(max_x), int(min_y):int(max_y)]

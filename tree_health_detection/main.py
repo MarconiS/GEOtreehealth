@@ -18,6 +18,8 @@ import pickle
 import rasterio
 import torch
 import matplotlib.pyplot as plt
+import importlib
+
 
 import tree_delineation
 import tree_health_detection
@@ -27,7 +29,8 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import tempfile
-
+from pathlib import Path
+import shutil
 #import config.py
 import config
 
@@ -65,7 +68,7 @@ def __main__():
         
     #get the crowns that match with stem_path
     if config.crowns is not None:
-        crowns = gpd.read_file(config.data_path + config.crowns + '/SAM_'+config.siteID+'.gpkg', driver='GPKG')
+        crowns = gpd.read_file(config.data_path + config.crowns + '/SAM_'+config.siteID+'_manual.gpkg', driver='GPKG')
     else:
         #loop through geopackages in custom folder and append polygons in a unique geodataframe
         if config.get_tree_crowns:
@@ -95,20 +98,26 @@ def __main__():
 
     # if data storage required
     if config.store_clips:
-        rgb_dir = config.root_dir / "rgb"
-        hsi_dir = config.root_dir / "hsi"
-        png_dir = config.root_dir / "png"
+        if config.clean_dataset:
+            # remove directories and their content if they exist
+            for dir in [ config.root_dir + "rgb", config.root_dir + "hsi", config.root_dir + "lidar", config.root_dir + "polygon_mask", config.root_dir + "labels"]:
+                if os.path.exists(dir):
+                    shutil.rmtree(dir)
 
-        lidar_dir = config.root_dir / "lidar"
-        polygon_mask_dir = config.root_dir / "polygon_mask"
-        labels_dir = config.root_dir / "labels"
+        rgb_dir = config.root_dir + "rgb"
+        hsi_dir = config.root_dir + "hsi"
+        png_dir = config.root_dir + "png"
+        lidar_dir = config.root_dir + "lidar"
+        polygon_mask_dir = config.root_dir + "polygon_mask"
+        labels_dir = config.root_dir + "labels"
 
-        # Ensure that all directories exist
-        for dir in [config.root_dir, rgb_dir, hsi_dir, lidar_dir, polygon_mask_dir, labels_dir]:
-            dir.mkdir(parents=True, exist_ok=True)
+        # Ensure that all directories exist. if directories do not exist, create them
+        for dir in [config.root_dir, rgb_dir, hsi_dir, png_dir, lidar_dir, polygon_mask_dir, labels_dir]:
+            if not os.path.exists(dir):
+                os.makedirs(dir)
 
         # Load your polygon data (GeoDataFrame)
-        gdf = gpd.read_file(config.data_path+crowns)
+        gdf = gpd.read_file(config.data_path + config.crowns + '/SAM_'+config.siteID+'_manual.gpkg', driver='GPKG')
         itcs = gpd.read_file( config.data_path+config.stem_path)
 
         # select only the columns needed and turn into dataframe
@@ -117,8 +126,9 @@ def __main__():
 
         # Process each polygon
         for idx, row in gdf.iterrows():
-            tree_health_detection.store_data_structures.process_polygon(polygon = row, root_dir = config.root_dir,  rgb_path = config.data_path+config.rgb_path, 
-                            hsi_path = config.data_path+hsi_img, 
+            tree_health_detection.store_data_structures.process_polygon(polygon = row,
+                            root_dir = config.root_dir,  rgb_path = config.data_path+config.rgb_path, 
+                            hsi_path = config.data_path+config.hsi_img, 
                             lidar_path = config.data_path+config.laz_path, polygon_id=  idx, itcs=itcs)
 
     ### move to main script
@@ -254,7 +264,9 @@ def __main__():
 
     # Transform function to resize the image
     resize = transforms.Resize((config.hsi_resize, config.hsi_resize))
-
+    del hsi, rgb, lidar, labels
+    del  hsi_, rgb_, lidar_, labels_
+    torch.cuda.empty_cache()
     # Test Set Evaluation
     model.eval()
     test_preds = []
@@ -316,5 +328,3 @@ def __main__():
 
     return(model)
 
-if __name__ == '__main__':
-    __main__()
