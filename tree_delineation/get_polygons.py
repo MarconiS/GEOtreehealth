@@ -16,7 +16,7 @@ from scipy.ndimage import zoom
 import torch
 import imageio
 import rasterio
-from shapely.affinity import translate
+from shapely.affinity import translate, scale
 
 # Import the necessary libraries
 import os
@@ -67,6 +67,7 @@ from scipy.ndimage import zoom
 import os
 import requests
 import config
+from transformers import SamModel, SamProcessor
 
 
 def mask_to_polygons(mask, individual_point):
@@ -110,11 +111,11 @@ def mask_to_polygons(mask, individual_point):
 
 # sam_checkpoint = "../tree_mask_delineation/SAM/checkpoints/sam_vit_h_4b8939.pth"
 # Define a function to make predictions of tree crown polygons using SAM
-def predict_tree_crowns(batch, input_points, neighbors = 3, 
-                        input_boxes = None, point_type='grid', 
+def predict_tree_crowns(batch, input_points, affine, neighbors = 3, first_neigh = 1,
+                        input_boxes = None, point_type='grid', resolution = 0.1,
                         rescale_to = None, mode = 'only_points', rgb = True,
                         sam_checkpoint = "../tree_mask_delineation/SAM/checkpoints/sam_vit_h_4b8939.pth",
-                        model_type = "vit_h", grid_size = 6):
+                        model_type = "vit_h", grid_size = 6, grid_space =200):
 
     if not os.path.exists(sam_checkpoint):
         response = requests.get(config.url, stream=True)
@@ -134,16 +135,21 @@ def predict_tree_crowns(batch, input_points, neighbors = 3,
 
     #from tree_health_detection.src.get_itcs_polygons import mask_to_delineation
     from skimage import exposure
-    batch = np.moveaxis(batch, 0, -1)
-    batch = np.flip(batch, axis=0) 
-    original_shape = batch.shape
+    batch = np.transpose(batch, (2, 1, 0))
 
-    #change input boxes values into integers
-    if input_boxes is not None:
-        input_boxes = input_boxes.astype(int)
+    # change x with y
+    batch = np.flip(np.transpose(batch, (1, 0, 2)), 1)
+
+    #batch = np.flip(batch, axis=0) 
+    batch = np.flip(batch, axis=1) 
+    # linear stretch of the batch image, between 0 and 255
+    batch = exposure.rescale_intensity(batch, out_range=(0, 255))
+    batch =  np.array(batch, dtype=np.uint8)
+    original_shape = batch.shape
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     sam = sam_model_registry[config.model_type](checkpoint=config.sam_checkpoint)
+    processor = SamProcessor.from_pretrained("facebook/sam-vit-huge")
 
     #neighbors must be the minimum between the total number of input_points and the argument neighbors
     #neighbors = min(input_points.shape[0]-2, neighbors)
@@ -158,21 +164,17 @@ def predict_tree_crowns(batch, input_points, neighbors = 3,
             input_boxes[:,1] = input_boxes[:,1] * rescale_to / original_shape[0]
             input_boxes[:,2] = input_boxes[:,2] * rescale_to / original_shape[1]
             input_boxes[:,3] = input_boxes[:,3] * rescale_to / original_shape[0]
-
-    # linear stretch of the batch image, between 0 and 255
-    batch = exposure.rescale_intensity(batch, out_range=(0, 255))
-    batch =  np.array(batch, dtype=np.uint8)
-
+    
     sam.to(device=device)
     predictor = SamPredictor(sam)
     #flip rasterio to be h,w, channels
-    predictor.set_image(np.array(batch))
-    image_embedding = predictor.get_image_embedding().cpu().numpy()
-
-    #turn stem points into a numpy array
+    predictor.set_image(batch)
+    
+    #reset index
+    input_points = input_points.reset_index(drop=True)
     input_point = np.column_stack((input_points['x'], input_points['y']))
     input_crowns = input_points['StemTag']
-    crown_mask = pd.DataFrame(columns=["geometry", "score"])
+    crown_mask = pd.DataFrame(columns=["geometry", "score","StemTag"])
     crown_scores=[]
     crown_logits=[]
     crown_masks = []
@@ -185,9 +187,12 @@ def predict_tree_crowns(batch, input_points, neighbors = 3,
         #if column StemTag is present, add it to the transformed_boxes_batch
         if input_boxes.shape[1] == 5:
             stemID = input_boxes[:,4].copy()
+        #turn transformed_boxes into numpy
 
-        transformed_boxes_batch = torch.tensor(transformed_boxes_batch, device=predictor.device)
+        transformed_boxes_batch = torch.tensor(transformed_boxes_batch.astype('float32'), 
+                                               device=predictor.device)
         transformed_boxes_batch = predictor.transform.apply_boxes_torch(transformed_boxes_batch, batch.shape[:2])
+        
         masks,scores, logits = predictor.predict_torch(
             point_coords=None,
             point_labels=None,
@@ -233,7 +238,8 @@ def predict_tree_crowns(batch, input_points, neighbors = 3,
     if input_boxes is not None and mode == 'bbox_and_centers':# and onnx_model_path is None:
                 # if input_boxes is pandas, turn into numpy
         if isinstance(input_boxes, pd.DataFrame):
-            input_boxes = input_boxes.to_numpy()
+            input_boxes = input_boxes.geometry.to_numpy()
+
         transformed_boxes_batch = input_boxes[:,:4].copy()
         #if column StemTag is present, add it to the transformed_boxes_batch
         if input_boxes.shape[1] == 5:
@@ -302,29 +308,40 @@ def predict_tree_crowns(batch, input_points, neighbors = 3,
             crown_scores.append(scores)
             crown_logits.append(logits)
 
-
     if input_boxes is None or mode == 'only_points':# and onnx_model_path is None:
         #loop through each stem point, make a prediction, and save the prediction
         if rgb == True:
-            input_point[:,0] = input_point[:,0] * 10 
-            input_point[:,1] = input_point[:,1] * 10 
-            grid_size = grid_size * 10
+            input_point[:,0] = input_point[:,0] / resolution
+            input_point[:,1] = input_point[:,1] / resolution
+            grid_size = config.grid_size / resolution
+            input_boxes = input_boxes / resolution
 
-        for it in range(input_point.shape[0]):
+
+        #which_stem = np.where(input_points['StemTag']== "0123031")
+        #predictor.set_image(np.array(batch))
+        for it in range(input_point.shape[0]):            
             #update input_label to be 0 everywhere except at position it       
-            input_label = np.zeros(input_point.shape[0])
-            input_label[it] = 1
             target_itc = input_point[it].copy()
-
             # Calculate the Euclidean distance between the ith row and the other rows
-            distances = np.linalg.norm(input_point - input_point[it], axis=1)
+
+            # if config.clip_each instance
+            if config.clip_each_instance:
+                # get xmin, ymin, xmax, ymax of the box around the target point
+                xmin = max(0, target_itc[0] - grid_space)
+                ymin = max(0, target_itc[1] - grid_space)
+                xmax = min(batch.shape[0], target_itc[0] + grid_space)
+                ymax = min(batch.shape[1], target_itc[1] + grid_space)
+
+                # clip batch and update coordinates of subset+point
+                batch_clipped = batch[int(xmin):int(xmax), int(ymin):int(ymax)]
+                predictor.set_image(np.array(batch_clipped))
+
             if point_type == "distance":
                 # using distance, get the indexes of input_points, ordered by distances
-                closest_indices = np.argsort(distances)[1:neighbors+1]
-            # find the 4 closest points one in each cardinal direction
+                distances = np.linalg.norm(input_point - input_point[it], axis=1)
+                closest_indices = np.argsort(distances)[first_neigh:neighbors+first_neigh]
             elif point_type == "cardinal":
                 closest_indices = np.argpartition(distances, 4)[:4]
-            #pick a random sample of points, making sure that none is the target point
             
             elif point_type == "random":
                 #pick a random sample of points, making sure that none is the target point
@@ -367,7 +384,7 @@ def predict_tree_crowns(batch, input_points, neighbors = 3,
                 points.append([min(x + grid_size, batch.shape[1]), y])
                 points.append([max(x - grid_size, 0), y])
 
-                points = np.array(points)[:neighbors,:]
+                points = np.array(points)
             else:
                 # define points as the index of all the points in the  input_point but input_point[it]
                 closest_indices = np.delete(np.arange(input_point.shape[0]), it)
@@ -375,109 +392,158 @@ def predict_tree_crowns(batch, input_points, neighbors = 3,
             # Subset the array to the ith row and the 10 closest rows
 
             if point_type != "grid":
+                
+                min_y = max(target_itc[1] - grid_size, 0)
+                min_x = max(target_itc[0] - grid_size, 0)
+                max_x = min(target_itc[0] + grid_size, batch.shape[0])
+                max_y = min(target_itc[1] + grid_size, batch.shape[0])
+
                 subset_point = input_point[closest_indices].copy()
-                subset_label = input_label[closest_indices]
+                subset_label = np.zeros(subset_point.shape[0])
                 subset_label = subset_label.astype(np.int8)
                 #append subset_point with the target point
-                subset_point = np.vstack((subset_point, target_itc))
-                subset_label = np.append(subset_label, 1)
+                subset_point = np.vstack(( target_itc, subset_point))
+                subset_label = np.append(1, subset_label)
             else:
-                subset_point = points.copy()
-                subset_label = np.zeros(points.shape[0], dtype=np.int8)
+                subset_point = points.copy()[:neighbors,:]
+                subset_label = np.zeros(subset_point.shape[0], dtype=np.int8)
                 #append subset_point with the target point
                 subset_point = np.vstack((subset_point, target_itc))
                 subset_label = np.append(subset_label, 1)
 
-            # set up a bounding box around the target point
-            min_x = np.min(subset_point[:,0])
-            max_x = np.max(subset_point[:,0])
-            min_y = np.min(subset_point[:,1])
-            max_y = np.max(subset_point[:,1])
+                # set up a bounding box around the target point
+                min_x = np.min(points[:,0])
+                max_x = np.max(points[:,0])
+                min_y = np.min(points[:,1])
+                max_y = np.max(points[:,1])
 
-            subset_point = np.vstack((subset_point, [0.0, 0.0]))
-            subset_label = np.append(subset_label, -1)
+
             # Create an empty mask input and an indicator for no mask.
             #mask_input = np.zeros((1, 1, 256, 256), dtype=np.float32)
+            if config.clip_each_instance:
+                subset_point[:,0] = subset_point[:,0] - xmin
+                subset_point[:,1] = subset_point[:,1] - ymin
+                target_itc = target_itc - np.array([xmin, ymin])
 
-            target_bbox = np.array([[min_x, min_y, max_x, max_y]])
+            #subset_point = np.vstack((subset_point, [0.0, 0.0]))
+            #subset_label = np.append(subset_label, -1)
+            inBB = 0
+            if input_boxes is not None:
+                # extract the bounding box overlapping with the target point. 
+                # which boxes have xmin < x < xmax and ymin < y < ymax
+                which_box = np.where((input_boxes[:,0] < target_itc[0]) & (input_boxes[:,2] > target_itc[0]) & 
+                                     (input_boxes[:,1] < target_itc[1]) & (input_boxes[:,3] > target_itc[1]))
+                if len(which_box[0]) == 0:
+                    target_bbox = np.array([[min_x, min_y, max_x, max_y]])
+                else:
+                    inBB = 1
+                    # if length target_box is greater than 2, then pick the box whose center is slosest to the target itc
+                    target_bbox = np.array(input_boxes[which_box[0], :4]).astype(np.float32)
+                    if len(which_box[0]) > 1:
+                        # get the center of the boxes
+                        centers = np.array([(target_bbox[:,0] + target_bbox[:,2])/2, (target_bbox[:,1] + target_bbox[:,3])/2]).T
+                        # get the distance between the centers and the target itc
+                        dist = np.sqrt(np.sum((centers - target_itc)**2, axis=1))
+                        # get the index of the box with the smallest distance
+                        which_box = np.argmin(dist)
+                        target_bbox = np.array([target_bbox[which_box, :]])
+
+            else:
+                target_bbox = np.array([[min_x, min_y, max_x, max_y]])
+            
+            # turn batch into an image
+            
+            #np.transpose(np.array(batch), (1, 0, 2))
+            #predictor.set_image(np.array(batch))
+            subset_point[:,1]  = batch.shape[0] -  subset_point[:,1] 
+            target_bbox[0][[1,3]] = batch.shape[0] - target_bbox[0][[3,1]]
             masks, scores, logits  = predictor.predict(
                 point_coords=subset_point,
                 point_labels=subset_label,
                 box=target_bbox,
                 multimask_output=True,
             )
-            '''
-            mask_input = logits[np.argmax(scores), :, :]  # Choose the model's best mask
-            masks, scores, _  = predictor.predict(
-                point_coords=subset_point,
-                point_labels=subset_label,
-                mask_input=mask_input[None, :, :],
-                multimask_output=False,
-            )
-            '''
-            #uncomment if getting rid of ONNX
-            '''
-            masks, scores, logits = predictor.predict(
-                point_coords=subset_point,
-                point_labels=subset_label,
-                multimask_output=False,
-            )
-            '''
-
+            #masks = np.transpose(masks,  (0, 2, 1))
+            # Find the indices of the True values
+            true_indices = np.argwhere(masks)
+            # which of the true indices are the target point in dimensions 1 and 2
+            mask_overlapping = true_indices[np.where((true_indices[:,2] == int(target_itc[0])) & (true_indices[:,1] == batch.shape[0] - int(target_itc[1])))]
+            if mask_overlapping.shape[0] == 0:
+                continue
+            # from maks, keep only those that have mask_overlapping in the first dimension
+            masks = masks[mask_overlapping[:,0]]
+            scores = scores[mask_overlapping[:,0]]
             #pick the mask with the highest score
             if len(masks) > 1:
-                masks = masks[scores.argmax()]
-                scores = scores[scores.argmax()]
+                #get only the mask whose value is closest to 1
+                sc = abs(1 - scores)
+                masks = masks[sc.argmax()]
+                scores = scores[sc.argmax()]
             else:
                 masks = masks[0]
                 scores = scores[0]
-            # Find the indices of the True values
-            true_indices = np.argwhere(masks)
+            
             #skip empty masks
             if true_indices.shape[0] < 3:
                 continue
 
-            polygons = mask_to_delineation(mask = masks, center = target_itc,  buffer_size = 0)
+            area = np.sum(masks)
+            # from masks, subtract 650 from the y coordinates
+            '''
+            # save the mask as image
+            mk= np.rot90(masks, 0, axes=(0, 1))
+            mask_image = Image.fromarray(masks)
+            mask_image.save(os.path.join('mask.png'))
+            # save the batch as image
+            batch_image = Image.fromarray(batch)
+            batch_image.save(os.path.join('batch.png'))
+            '''
+
+            if area < 200**2:
+                polygons = mask_to_delineation(mk = masks, 
+                                               target_itc = target_itc,  
+                                               buffer_size = 100)
+            #calculate area of the polygon
             #pick the polygon that intercepts with individual point
+            #individual_point = Point(target_itc)
+            #polygons = [poly for poly in polygons if poly.intersects(individual_point)]
 
-            # Calculate the convex hull
+            # if if config.clip_each instance, shift the coordinates of the polygons to the original coordinates
+            if config.clip_each_instance:
+                # shift polygons coordinates to the original batch coordinates
+                polygons = [translate(poly, xoff=xmin, yoff=ymin) for poly in polygons]
+                # divide coordinates by 10 to get meters
             if rgb:
-                target_itc = target_itc/10 
-                scaled_polygons = []
-                for poly in polygons:
-                    # divide all cooridnates of polygons by 10 to get meters
-                    x, y = poly.exterior.coords.xy
-                    # Divide each vertex coordinate by 10
-                    x = [coord / 10 for coord in x]
-                    y = [coord / 10 for coord in y]
+                polygons = [scale(poly, xfact= resolution, yfact= resolution, origin=(0,0,0)) for poly in polygons]
 
-                    # Create a new polygon with the scaled coordinates
-                    tmp = Polygon(zip(x, y))
-                    scaled_polygons.append(tmp)
-
-            individual_point = Point(target_itc)
-            polygons = [poly for poly in scaled_polygons if poly.intersects(individual_point)]
             if len(polygons) ==0:
                 continue
 
+            polygons = [translate(poly, xoff=affine[2], yoff=affine[5] + (batch.shape[1]*affine[4])) for poly in polygons]
             # Create a GeoDataFrame and append the polygon
             gdf_temp = gpd.GeoDataFrame(geometry=[polygons[0]], columns=["geometry"])
             gdf_temp["score"] = scores
+            gdf_temp["inBB"] = inBB
             gdf_temp["StemTag"] = input_crowns.iloc[it]
-
+            gdf_temp.to_file("temp.gpkg", driver="GPKG")
             # Append the temporary GeoDataFrame to the main GeoDataFrame
             crown_mask = pd.concat([crown_mask, gdf_temp], ignore_index=True)
             crown_scores.append(scores)
             crown_logits.append(logits)
 
     # Convert the DataFrame to a GeoDataFrame
-    crown_mask = gpd.GeoDataFrame(crown_mask, geometry=crown_mask.geometry)
+    predictions = gpd.GeoDataFrame(crown_mask, geometry=crown_mask.geometry)
+    predictions.to_file("temp.gpkg", driver="GPKG")
+    # convert coordinates to utm suing affine
     #reshift crown mask coordiantes to original size
+    # get bounding box of the geodataframe crown_mask
+    
     if rescale_to is not None:
-        crown_mask['geometry'] = crown_mask['geometry'].translate(xoff=0, yoff=0)
-        crown_mask['geometry'] = crown_mask['geometry'].scale(xfact=original_shape[1]/rescale_to, yfact=original_shape[0]/rescale_to, origin=(0,0))
+        predictions['geometry'] = predictions['geometry'].translate(xoff=0, yoff=0)
+        predictions['geometry'] = predictions['geometry'].scale(xfact=original_shape[1]/rescale_to, yfact=original_shape[0]/rescale_to, origin=(0,0))
 
-    return crown_mask, crown_scores, crown_logits
+    return predictions, crown_scores, crown_logits
+
 
 
 # Define a function to save the predictions as geopandas
@@ -542,13 +608,13 @@ import rasterio
 from rasterio.windows import Window
 from shapely.geometry import box
 
-def split_image(image_file, hsi_img, itcs, bbox, batch_size=40, buffer_distance=10):
+def split_image(image_file,itcs, bbox, batch_size=40, buffer_distance=10):
     with rasterio.open(image_file) as src:
         height, width = src.shape
         resolution = src.transform[0]
         batch_size_ = int(batch_size / resolution)
         
-    buffer_distance_ = int(buffer_distance)
+    buffer_distance_ = int(buffer_distance)/resolution
 
     raster_batches = []
     hsi_batches = []
@@ -576,18 +642,8 @@ def split_image(image_file, hsi_img, itcs, bbox, batch_size=40, buffer_distance=
                 raster_batches.append(batch)
                 
                 left, top = src.xy(i_, j_)
-                right, bottom = src.xy(i_ + wdt, j_ + hgt)
+                right, bottom = src.xy(i_ + hgt, j_ + wdt)
                 batch_bounds = box(left , bottom , right , top )
-
-            with rasterio.open(hsi_img) as hsi: 
-                resolution_hsi = hsi.transform[0]
-                resolution_factor =  resolution_hsi / resolution 
-                batch_size_hsi = round(batch_size_ / resolution_factor)
-                hsi_height, hsi_width = hsi.shape
-                window_hsi = Window(col_off=j_ / resolution_factor, row_off=i_ / resolution_factor, 
-                            width=wdt/resolution_factor, height=hgt/resolution_factor)
-                hsi_batch = hsi.read(window=window_hsi)
-                hsi_batches.append(hsi_batch)
 
             itcs_clipped = gpd.clip(itcs, batch_bounds)
             itcs_clipped["geometry"] = itcs_clipped["geometry"].apply(
@@ -627,7 +683,7 @@ def split_image(image_file, hsi_img, itcs, bbox, batch_size=40, buffer_distance=
             itcs_boxes.append(tmp_bx)
             dbox.append(bbox_clipped)
     # Return the lists of raster batches and clipped GeoDataFrames
-    return raster_batches, hsi_batches, itcs_batches, itcs_boxes, affines
+    return raster_batches, itcs_batches, itcs_boxes, affines
 
 
 # merge bbox and tmp_bx, then subtract bbox from tmp_bx
@@ -638,14 +694,18 @@ def get_bbox_diff(bbox_clipped, tmp_bx):
 
 from multiprocessing import Pool
 
-def create_polygon(category, category_mask, offset_x, offset_y):
+def create_polygon(category, category_mask, offset_x=0, offset_y=0):
     polygons = []
     # Create a binary mask for the current category
     binary_mask = (category_mask == category).astype(np.uint8)
     # Convert binary_mask to 8-bit single-channel image
     binary_mask = (binary_mask * 255).astype(np.uint8)
+
     # Find contours of the binary mask
     contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # Flip the y-coordinate of contour points
+    for contour in contours:
+        contour[:, 0, 1] = category_mask.shape[0] - contour[:, 0, 1]
 
     # use a concave hull instead
     #contours = [cv2.convexHull(contour) for contour in contours]
@@ -655,6 +715,8 @@ def create_polygon(category, category_mask, offset_x, offset_y):
         # Convert the contours to polygons
         for contour in contours:
             # Simplify the contour to a polygon
+            if len(contour) < 4:
+                continue
             poly = Polygon(shell=contour.squeeze())
             # shift polygons coordinates to the position before clipping labelled mask
             poly = translate(poly, xoff=offset_x, yoff=offset_y)
@@ -663,47 +725,79 @@ def create_polygon(category, category_mask, offset_x, offset_y):
     return polygons
 
 
-def mask_to_delineation(mask, center, rgb = True, buffer_size = 0):
+def mask_to_delineation(mk, target_itc,  buffer_size = 100):
+    # if mask is 3d flatten to 2d
+    if len(mk.shape) == 3:
+        mk=mk[0,:,:]
 
-    labeled_mask = label(mask, connectivity=1)
+    # Convert mask to 8-bit single-channel image
+    mask_uint8 = (mk * 255).astype(np.uint8)
+    #np.savetxt('output.csv', mask_uint8, delimiter=',')
+
+    #use the smallest region of the mask wich contains all 255s
+    target_itc_bounds = np.array(np.where(mask_uint8 == 255))
+    target_itc_bounds = np.array([target_itc_bounds[0,:].min(), target_itc_bounds[1,:].min(), 
+                                    target_itc_bounds[0,:].max(), target_itc_bounds[1,:].max()])
+    min_y = max(0, target_itc_bounds[0]-1)
+    min_x = max(0, target_itc_bounds[1]-1)
+    max_y = min(mask_uint8.shape[0], target_itc_bounds[2]+1)
+    max_x = min(mask_uint8.shape[1], target_itc_bounds[3]+1)
+    '''
+    mask_uint8 = mask_uint8[min_y:max_y,min_x:max_x]
+    #mask_uint8 = np.rot90(mask_uint8, 1, axes=(0, 1))
+    np.savetxt('output.csv', mask_uint8, delimiter=',')
+
+    # mask_unit8 has the coordinates starting in 0,0. cv2 wants the coordinates to start in the top left corner. 
+    # So we need to shift the coordinates to the top left corner
+    
+  
+    # Use connectedComponents function
+    num_labels, labeled_mask = cv2.connectedComponents(mask_uint8, connectivity=8)
     # if 3d flatten to 2d
     if len(labeled_mask.shape) == 3:
         labeled_mask=labeled_mask[0,:,:]
 
-    # Compute the smallest region containing all non-zero values
-    non_zero_indices = np.nonzero(labeled_mask)
-    min_x, min_y = np.min(non_zero_indices, axis=1)
-    max_x, max_y = np.max(non_zero_indices, axis=1)
-    # Define the center of the smallest region
-    if(max_x == min_x):
-        max_x = max_x + 1
-
-    if(max_y == min_y):
-        max_y = max_y + 1
-        
-    if buffer_size is not None:
-        #identify buffer around the target to dramatically increase efficency
-        submask = labeled_mask[int(min_x):int(max_x), int(min_y):int(max_y)]
-    else:
-        submask = labeled_mask
-
     # Create a dictionary with as many values as unique values in the labeled mask
-    unique_labels = np.unique(submask)
+    unique_labels = np.unique(mask_uint8)
     label_to_category = {label: category for label, category in zip(unique_labels, range(unique_labels.shape[0]))}
+    # pick labels with less than 3 pixels and remove them from label_to_category
+    for label in unique_labels:
+        if np.sum(mask_uint8 == label) < 3:
+            del label_to_category[label]
 
-    category_mask = np.vectorize(label_to_category.get)(submask)
-    
+    # Define a function to handle None values
+    def get_category(label):
+        return label_to_category.get(label, -9)
+
+    # Apply the vectorized function to the submask with output data type as object (string)
+    category_mask = np.vectorize(get_category, otypes=[object])(mask_uint8)
+    #category_mask = np.roll(category_mask, -category_mask.shape[0], axis=0)
+    np.savetxt('output.csv', category_mask, delimiter=',')
+    '''
+    category_mask = mask_uint8
     # Turn each category into a polygon
     polygons = []
+    # Filter only numeric values
     for category in np.unique(category_mask):
-        if category == 0:  # Skip the background
+        if category <= 0:  # Skip the background
             continue
         # Create a binary mask for the current category
-        poly = create_polygon(category, category_mask, min_y, min_x)
+        poly = create_polygon(category, category_mask)#, min_x, min_y)
         polygons.append(poly)
     # flatten the list of lists
     polygons = [item for sublist in polygons for item in sublist]
-    #check that center is in the polygon
-    polygons = [poly for poly in polygons if poly.contains(Point(center))]
+    if target_itc is not None:
+        pp =   [poly for poly in polygons if poly.contains(Point(target_itc))]
+        #check that center is in the polygon
+        if len(polygons) > 1:
+            if len(pp) ==1:
+                polygons = pp
+            else:
+            #
+            #   polygons = [poly for poly in polygons if poly.contains(Point(target_itc))]
+            #above all polygons, pick the one whose centroid is closest to the target_itcs
+                polygons = sorted(polygons, key=lambda poly: poly.centroid.distance(Point(target_itc)))
+                polygons = [polygons[0]]
+            
 
     return polygons

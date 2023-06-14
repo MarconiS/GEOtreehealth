@@ -96,7 +96,7 @@ def cumulative_linear_stretch(image, background_mask=None):
 
 def png_with_class(dataset_path, polygon, bool_mask, output_path, status_label):
     with rasterio.open(dataset_path) as src:
-        out_image, out_transform = mask(src, [polygon], crop=True)
+        out_image, out_transform = mask(src, [polygon.geometry], crop=True)
         out_meta = src.meta
         out_meta.update({
             "driver": "GTiff",
@@ -152,16 +152,20 @@ def process_polygon(polygon, root_dir, rgb_path, hsi_path, lidar_path, polygon_i
     lidar_dir = Path(root_dir) / "lidar"
     polygon_mask_dir = Path(root_dir) / "polygon_mask"
     labels_dir = Path(root_dir) / "labels"
-
+    
+    # from itcs, pick the rows that match the polygon StemTag
+    label = itcs.loc[itcs['StemTag'] == polygon.StemTag] 
+    # if there is no match in itcs, then skip
+    if label.empty:
+        return
+    
     # Extract and save data cubes
     extract_data_cube(dataset_path = rgb_path, polygon = polygon.geometry, output_path = rgb_dir / f"{polygon_id}.npy")
                       
     bool_mask = extract_data_cube(dataset_path = hsi_path, polygon = polygon.geometry, output_path = hsi_dir / f"{polygon_id}.npy",
                       mask_path = polygon_mask_dir / f"{polygon_id}.npy")
     extract_data_cube_lidar(dataset_path = lidar_path, polygon =polygon.geometry, output_path = lidar_dir / f"{polygon_id}.npy")
-    
-    # from itcs, pick the rows that match the polygon StemTag
-    label = itcs.loc[itcs['StemTag'] == polygon.StemTag] 
+        
     # add polygon_id to the label and the path of the rgb, hsi and lidar extracted cubes
     label['polygon_id'] = polygon_id
     label['rgb_path'] = Path(rgb_dir) / f"{polygon_id}.npy"

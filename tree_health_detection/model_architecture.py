@@ -88,10 +88,15 @@ class SpectralAttentionLayer(nn.Module):
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
+        # Compute a mask for zero-valued pixels
+        mask = (x != 0).float()
+
         avg_out = self.fc(self.avg_pool(x))
         max_out = self.fc(self.max_pool(x))
         out = avg_out + max_out
-        return self.sigmoid(out)
+
+        # Apply the mask to the attention weights
+        out = out * mask
 
 
 class SpectralAttentionNetwork(nn.Module):
@@ -367,5 +372,60 @@ class MultiModalMultiTaskNet(nn.Module):
 
         # Pass through final layer to make prediction
         out = self.fc[siteID](out)
+
+        return out
+
+class MultiModalTransformNet(nn.Module):
+    def __init__(self, in_channels, num_classes, num_bands,
+                 hsi_out_features, rgb_out_features, lidar_out_features):
+        super(MultiModalNet, self).__init__()
+        self.num_bands= num_bands
+        self.hsi_out_features = hsi_out_features
+        self.rgb_out_features = rgb_out_features
+        self.lidar_out_features = lidar_out_features
+        self.num_classes = num_classes
+        # 1. HSI branch: Spectral Attention Network
+        self.hsi_branch = SpectralAttentionNetwork(num_bands, hsi_out_features) # to be implemented
+        
+        # 2. RGB branch: Spatial Attention + Hybrid Visual Transformer
+        self.rgb_branch = HybridViTWithAttention(num_classes=rgb_out_features)
+
+        # 3. LiDAR branch: DGCNN
+        self.lidar_branch = DGCNN(in_channels, lidar_out_features)
+
+        # Define the transformer layer
+        num_features = hsi_out_features + rgb_out_features + lidar_out_features
+        self.transformer_encoder = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(d_model=num_features, nhead=4), num_layers=1
+        )
+
+        # Define the fully connected layer
+        self.fc = nn.Linear(num_features, num_classes)  # replace num_classes with the number of your classes
+
+    def forward(self, hsi, rgb, lidar):
+        # Pass inputs through corresponding branches
+        hsi_out = self.hsi_branch(hsi)
+        rgb_out = self.rgb_branch(rgb)
+        lidar_out = self.lidar_branch(lidar)
+
+        # Use adaptive average pooling to handle different image sizes
+        hsi_out = nn.AdaptiveAvgPool2d((1,1))(hsi_out)
+        #lidar_out = torch.max(lidar_out, -1, keepdim=False)[0]  # apply global max pooling to lidar_out
+
+        
+        # Flatten the outputs
+        hsi_out = hsi_out.view(hsi_out.size(0), -1)
+        lidar_out = lidar_out.view(lidar_out.size(0), -1)
+        
+        # Concatenate the outputs   
+        out = torch.cat((hsi_out, rgb_out, lidar_out), dim=1)
+
+        # Pass the concatenated outputs through the transformer layer
+        out = out.unsqueeze(1)  # add a dimension for the sequence length
+        out = self.transformer_encoder(out)
+        out = out.squeeze(1)  # remove the sequence length dimension
+
+        # Pass through final layer to make prediction
+        out = self.fc(out)
 
         return out

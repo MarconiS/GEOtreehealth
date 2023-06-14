@@ -14,6 +14,7 @@ import json
 from sklearn.metrics.pairwise import euclidean_distances
 from matplotlib import pyplot as plt
 import os
+import config
 def split_overlapping_polygons(gdf):
     def add_geometry(geom, subpolygons):
         if isinstance(geom, GeometryCollection):
@@ -428,3 +429,28 @@ def extract_boxes(rgb_path):
     model.use_release()
     boxes = model.predict_tile(raster_path=rgb_path, return_plot=False)
     return boxes
+
+
+# assign StemTag to each box overlapping with itc
+def assign_itc_to_boxes(bbox, itcs, fields):
+    # Perform a spatial join between the two GeoDataFrames
+    joined_gdf = gpd.sjoin(bbox, itcs, how="inner", predicate='contains')
+    joined_gdf = joined_gdf[['StemTag', 'geometry']]
+    fields_dat = pd.read_csv(fields)
+    fields_dat = fields_dat[['StemTag', 'SiteID', 'Species', 'Status',
+                        'DBH', 'Crown position', 'Percentage of crown intact',
+        'Percentage of crown living', 'Lean angle if greater than 15 degrees',
+        'FAD', 'Wounded main stem', 'Canker; swelling, deformity', 'Rotting trunk']]
+    
+    # merge the joined_gdf with fields_dat
+    joined_gdf = joined_gdf.merge(fields_dat, on='StemTag', how='left')
+    updated_itcs = itcs[['StemTag', 'geometry']]
+    updated_itcs = updated_itcs.merge(fields_dat, on='StemTag', how='left')
+    updated_itcs = gpd.GeoDataFrame(updated_itcs, geometry='geometry')
+    updated_itcs.to_file(f'{config.data_path}/Stems/{config.siteID}_itcs.gpkg', driver='GPKG')
+    # Group by the bounding box identifier and find the tree with the highest 'CrwnPst' value in each box
+    # If there are multiple trees with the same 'CrwnPst' value, pick the one with the highest 'dbh' value
+    result = joined_gdf.sort_values(['Crown position', 'DBH'], ascending=[False, False]).groupby('StemTag').first()
+    result = gpd.GeoDataFrame(result, geometry='geometry')
+    result.to_file(f'{config.data_path}/Crowns/{config.siteID}/SAM_pp_{0}.gpkg', driver='GPKG')
+    return result
