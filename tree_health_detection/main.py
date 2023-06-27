@@ -68,7 +68,7 @@ def __main__():
         
     #get the crowns that match with stem_path
     if config.crowns is not None:
-        crowns = gpd.read_file(config.data_path + config.crowns + '/SAM_'+config.siteID+'_manual.gpkg', driver='GPKG')
+        crowns = gpd.read_file(config.data_path + config.crowns+config.siteID+'_subset.gpkg', driver='GPKG')
     else:
         #loop through geopackages in custom folder and append polygons in a unique geodataframe
         if config.get_tree_crowns:
@@ -91,10 +91,7 @@ def __main__():
             print("No tree crowns found. Please run tree_mask_delineation.py first. You can run it as a standalone or by setting get_tree_crown as True in config.py")
             exit() 
     
-    stem_positions = gpd.read_file(config.data_path+config.stem_path)
-    if 'StemTag' not in crowns.columns:
-        # left join crowns and stem_positions by StemTag, assigning a polygon to each stem
-        stem_positions = gpd.sjoin(stem_positions, crowns, how="left", op='within')
+
 
     # if data storage required
     if config.store_clips:
@@ -117,20 +114,18 @@ def __main__():
                 os.makedirs(dir)
 
         # Load your polygon data (GeoDataFrame)
-        gdf = gpd.read_file(config.data_path + config.crowns + '/SAM_'+config.siteID+'_manual.gpkg', driver='GPKG')
-        itcs = gpd.read_file( config.data_path+config.stem_path)
-
-        # select only the columns needed and turn into dataframe
-        itcs = itcs[['StemTag','Crwnpst', 'SiteID','Species','DBH', 'Status', 'FAD']]
-        itcs = pd.DataFrame(itcs)
+        gdf = gpd.read_file(config.data_path + config.crowns+config.siteID+'_subset.gpkg', driver='GPKG')
 
         # Process each polygon
         for idx, row in gdf.iterrows():
-            tree_health_detection.store_data_structures.process_polygon(polygon = row,
-                            root_dir = config.root_dir,  rgb_path = config.data_path+config.rgb_path, 
-                            hsi_path = config.data_path+config.hsi_img, 
-                            lidar_path = config.data_path+config.laz_path, polygon_id=  idx, itcs=itcs)
-
+            try:
+                tree_health_detection.store_data_structures.process_polygon(polygon = row.copy(),
+                                root_dir = config.root_dir,  rgb_path = config.data_path+config.rgb_path, 
+                                hsi_path = config.data_path+config.hsi_img, 
+                                lidar_path = config.data_path+config.laz_path, polygon_id=  idx)
+            except Exception as e:
+                print(f"Error processing polygon {idx}: {str(e)}")
+                continue
     ### move to main script
     # list all files in folder data_pt
     data_pt = config.root_dir +"labels/"
@@ -140,10 +135,16 @@ def __main__():
     labels = []
     for file in files:
         if file.endswith('.csv'):
-            labels.append(pd.read_csv(data_pt + file))
+            tmp = pd.read_csv(data_pt + file)
+            labels.append(tmp)
     # concatenate all dataframes in the list
     labels_df = pd.concat(labels, ignore_index=True)
-
+    # remove all AU labels
+    #labels_df = labels_df[~labels_df[config.response].isin(['AU'])]
+    # count the number of unique responses, and remove entries occurring less than 10 times
+    counts = labels_df[config.response].value_counts()
+    labels_df = labels_df[~labels_df[config.response].isin(counts[counts < 10].index)]
+    labels_df = labels_df.reset_index(drop=True)
     # count the number of unique labels
     rebalanced_to = labels_df[config.response].value_counts().min()
 
@@ -155,6 +156,8 @@ def __main__():
         labels_df[config.response] = pd.factorize(labels_df[config.response])[0]
 
     labels_df = labels_df.reset_index(drop=True)
+
+
     # Split the data into train-test-validation (70%-15%-15%) with stratification
     train_data, temp_data = train_test_split(labels_df, test_size=0.3, random_state=42, stratify=labels_df[config.response])
     test_data, val_data = train_test_split(temp_data, test_size=0.5, random_state=42, stratify=temp_data[config.response]) 
@@ -164,7 +167,7 @@ def __main__():
     test_data = test_data.reset_index(drop=True)
     val_data = val_data.reset_index(drop=True)
 
-    train_dataset = tree_health_detection.MultiModalDataset(train_data, response=config.response, max_points=config.max_points)
+    train_dataset = tree_health_detection.MultiModalDataset(data = train_data, response=config.response, max_points=config.max_points)
     test_dataset = tree_health_detection.MultiModalDataset(test_data, response=config.response, max_points=config.max_points)
     val_dataset = tree_health_detection.MultiModalDataset(val_data, response=config.response, max_points=config.max_points)
 
@@ -185,7 +188,7 @@ def __main__():
     model = tree_health_detection.MultiModalNet(config.in_channels, num_classes, num_bands,
                  config.hsi_out_features, config.rgb_out_features, config.lidar_out_features)
     
-    model.to(device)
+    model = model.to(device)
 
     # Set up loss function and optimizer
     criterion = nn.CrossEntropyLoss()
@@ -198,10 +201,12 @@ def __main__():
 
     for epoch in range(config.num_epochs):
         # Training
-        model.train()
+        model = model.train()
         running_loss = 0
         for batch in train_loader:
             hsi = batch['hsi'].float().to(device)
+            # turn nan into 0
+            hsi[hsi != hsi] = 0
             rgb = batch['rgb'].float().to(device)
             lidar = batch['lidar'].float().to(device)
             labels = batch['label'].long().to(device)
@@ -219,7 +224,7 @@ def __main__():
         experiment.log_metric('train_loss', running_loss / len(train_loader), epoch=epoch)
             
         # Validation
-        model.eval()
+        model = model.eval()
         running_val_loss = 0
         val_preds = []
         val_labels = []
@@ -268,7 +273,7 @@ def __main__():
     del  hsi_, rgb_, lidar_, labels_
     torch.cuda.empty_cache()
     # Test Set Evaluation
-    model.eval()
+    model = model.eval()
     test_preds = []
     test_labels = []
     with torch.no_grad():
@@ -292,6 +297,14 @@ def __main__():
             # save hsi raster wuth rasterio
             #with rasterio.open('rgb_img.tif', 'w', driver='GTiff', width=rgb_img.shape[1], height=rgb_img.shape[2], count=rgb_img.shape[0], dtype=rgb_img.dtype) as dst:
             #    dst.write(rgb_img)
+        c_matrix = confusion_matrix(test_labels, test_preds)
+        # Generate the class names (assumes that labels are integers starting from 0)
+        class_names = [str(i) for i in range(c_matrix.shape[0])]
+
+        # Convert the confusion matrix to the Comet.ml format
+        matrix = {}
+        for i, row in enumerate(c_matrix):
+            matrix[class_names[i]] = dict(zip(class_names, row.tolist()))
 
 
         # Plotting RGB and HSI Images
@@ -319,6 +332,12 @@ def __main__():
 
         # Calculate test accuracy
         test_accuracy = 100 * correct / total
+        print(f'Test Accuracy: {test_accuracy}%')
+
+        # Convert the confusion matrix to the Comet.ml format
+        matrix = {}
+        for i, row in enumerate(c_matrix):
+            matrix[class_names[i]] = dict(zip(class_names, row.tolist()))
 
     # Log test accuracy
     experiment.log_metric('test_accuracy', test_accuracy)
@@ -328,3 +347,4 @@ def __main__():
 
     return(model)
 
+# md = __main__()

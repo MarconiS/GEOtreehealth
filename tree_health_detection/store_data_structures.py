@@ -119,6 +119,8 @@ def png_with_class(dataset_path, polygon, bool_mask, output_path, status_label):
         # add a 0 mask to negative values
         rgb_image[rgb_image < 0] = 0
         rgb_image[rgb_image > 10000] = 10000
+        # turn nan into 0s
+        rgb_image = np.nan_to_num(rgb_image)
 
         if rgb_image.max() > 0:
             # Normalize the image in range 0, 255
@@ -143,7 +145,7 @@ def png_with_class(dataset_path, polygon, bool_mask, output_path, status_label):
 
 
 # Function to process each polygon
-def process_polygon(polygon, root_dir, rgb_path, hsi_path, lidar_path, polygon_id, itcs):
+def process_polygon(polygon, root_dir, rgb_path, hsi_path, lidar_path, polygon_id):
 
     rgb_dir = Path(root_dir) / "rgb"
     hsi_dir = Path(root_dir) / "hsi"
@@ -154,26 +156,29 @@ def process_polygon(polygon, root_dir, rgb_path, hsi_path, lidar_path, polygon_i
     labels_dir = Path(root_dir) / "labels"
     
     # from itcs, pick the rows that match the polygon StemTag
-    label = itcs.loc[itcs['StemTag'] == polygon.StemTag] 
+    label = polygon #itcs.loc[itcs['StemTag'] == polygon.StemTag] 
+    #turn polygon into a geopandas dataframe
+    label = gpd.GeoDataFrame([label])
+    label = label.drop('geometry', axis=1)
     # if there is no match in itcs, then skip
     if label.empty:
         return
     
     # Extract and save data cubes
-    extract_data_cube(dataset_path = rgb_path, polygon = polygon.geometry, output_path = rgb_dir / f"{polygon_id}.npy")
+    extract_data_cube(dataset_path = rgb_path, polygon = polygon.geometry, output_path = rgb_dir / f"{polygon.SiteID}_{polygon_id}.npy")
                       
-    bool_mask = extract_data_cube(dataset_path = hsi_path, polygon = polygon.geometry, output_path = hsi_dir / f"{polygon_id}.npy",
-                      mask_path = polygon_mask_dir / f"{polygon_id}.npy")
-    extract_data_cube_lidar(dataset_path = lidar_path, polygon =polygon.geometry, output_path = lidar_dir / f"{polygon_id}.npy")
+    bool_mask = extract_data_cube(dataset_path = hsi_path, polygon = polygon.geometry, output_path = hsi_dir  / f"{polygon.SiteID}_{polygon_id}.npy",
+                      mask_path = polygon_mask_dir  / f"{polygon.SiteID}_{polygon_id}.npy")
+    extract_data_cube_lidar(dataset_path = lidar_path, polygon =polygon.geometry, output_path = lidar_dir / f"{polygon.SiteID}_{polygon_id}.npy")
         
     # add polygon_id to the label and the path of the rgb, hsi and lidar extracted cubes
     label['polygon_id'] = polygon_id
-    label['rgb_path'] = Path(rgb_dir) / f"{polygon_id}.npy"
-    label['hsi_path'] = Path(hsi_dir) / f"{polygon_id}.npy"
-    label['lidar_path'] = Path(lidar_dir) / f"{polygon_id}.npy"
-    png_with_class(dataset_path = hsi_path, polygon = polygon.geometry, bool_mask = bool_mask,
-                   output_path = png_dir / f"{label.Status.values[0]}_{polygon_id}.png", 
-                   status_label = label.Status.values[0])
+    label['rgb_path'] = Path(rgb_dir) / f"{polygon.SiteID}_{polygon_id}.npy"
+    label['hsi_path'] = Path(hsi_dir) / f"{polygon.SiteID}_{polygon_id}.npy"
+    label['lidar_path'] = Path(lidar_dir) / f"{polygon.SiteID}_{polygon_id}.npy"
+    png_with_class(dataset_path = hsi_path, polygon = polygon, bool_mask = bool_mask,
+                   output_path = png_dir / f"{label.Status}_{polygon.SiteID}_{polygon_id}.png", 
+                   status_label = label.Status)
     # save the label
-    label.to_csv(labels_dir / f"{polygon_id}.csv", index=False)
+    label.to_csv(labels_dir / f"{polygon.SiteID}_{polygon_id}.csv", index=False)
     

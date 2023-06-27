@@ -90,6 +90,7 @@ class SpectralAttentionLayer(nn.Module):
     def forward(self, x):
         # Compute a mask for zero-valued pixels
         mask = (x != 0).float()
+        mask[mask.isnan()] = 0  # Replace None values with zeros
 
         avg_out = self.fc(self.avg_pool(x))
         max_out = self.fc(self.max_pool(x))
@@ -97,6 +98,11 @@ class SpectralAttentionLayer(nn.Module):
 
         # Apply the mask to the attention weights
         out = out * mask
+
+        # Apply sigmoid to generate the attention map
+        sa = self.sigmoid(out)
+
+        return sa
 
 
 class SpectralAttentionNetwork(nn.Module):

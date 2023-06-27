@@ -26,11 +26,12 @@ def pansharpened_hsi_rgb():
 
     # rescale RGB to match the range of hyperspectral image
     for band in range(rgb_img.shape[0]):
-        rgb_img[band] /= rgb_img[band].max()
+        # calculate the max ignoring nan values
+        rgb_img[band] /= np.nan_to_num(rgb_img[band]).max() #rgb_img[band].max()
 
     # rescale hyperspectral to match the range of 0-1
     for band in range(hyperspectral_img.shape[0]):
-        hyperspectral_img[band] /= hyperspectral_img[band].max()
+        hyperspectral_img[band] /= np.nan_to_num(hyperspectral_img[band]).max() # hyperspectral_img[band].max()
 
     # convert the RGB image to grayscale
     rgb_gray = color.rgb2gray(np.moveaxis(rgb_img, 0, -1))
@@ -62,8 +63,8 @@ def pansharpened_hsi_rgb():
 
     # linstretch each band of fusion to 2-98 percentile
     for band in range(fusion.shape[0]):
-        p2 =  np.min(fusion[band])
-        p98 = np.max(fusion[band])
+        p2 =  np.nan_to_num(fusion[band]).min() # np.min(fusion[band])
+        p98 = np.nan_to_num(fusion[band]).max() #np.max(fusion[band])
         fusion[band] = np.interp(fusion[band], (p2, p98), (0, 255))
 
     #rescale fusion to 1-255 and turn into int8

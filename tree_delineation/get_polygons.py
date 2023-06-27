@@ -519,7 +519,7 @@ def predict_tree_crowns(batch, input_points, affine, neighbors = 3, first_neigh 
             if len(polygons) ==0:
                 continue
 
-            polygons = [translate(poly, xoff=affine[2], yoff=affine[5] + (batch.shape[1]*affine[4])) for poly in polygons]
+            polygons = [translate(poly, xoff=affine[2], yoff=affine[5] + (batch.shape[0]*affine[4])) for poly in polygons]
             # Create a GeoDataFrame and append the polygon
             gdf_temp = gpd.GeoDataFrame(geometry=[polygons[0]], columns=["geometry"])
             gdf_temp["score"] = scores

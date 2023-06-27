@@ -5,11 +5,11 @@ siteID = "OSBS"
 stem_path = "Stems/"+siteID+"_stems_legacy.gpkg"
 hyperspectral_tile  = 'indir/'+siteID+'/hsi_clip.tif'
 las_file = 'indir/'+siteID+'/LiDAR.laz'
-crowns = 'Crowns'
+crowns = '/SAMs/' #'Crowns/full_site/'
 SAM_outputs = '/home/smarconi/Documents/GitHub/tree_mask_delineation/outdir/itcs/backup/'
 root_dir = '/media/smarconi/Gaia/Macrosystem_2/NEON_processed/data/'
 hsi_img  = 'Imagery/'+siteID+'/HSI_ForestGeo.tif'
-laz_path = 'Imagery/'+siteID+'/LAS_ForestGeo.laz'
+laz_path = 'Imagery/'+siteID+'/LAS_ForestGeo.las'
 rgb_path = 'Imagery/'+siteID+'/RGB_ForestGeo.tif'
 data_path = '/media/smarconi/Gaia/Macrosystem_2/NEON_processed/'
 stem_path = 'Stems/'+siteID+'_stems_legacy.gpkg'
@@ -22,11 +22,11 @@ outdir = '/media/smarconi/Gaia/Macrosystem_2/NEON_processed/Stems/'+siteID
 #paths for segmentation
 folder = '../tree_mask_delineation/'
 seg_data_path = 'data/'
-seg_rgb_path = 'Imagery/'+siteID+'/PAN_ForestGeo.tif' 
-seg_pan_path = 'Imagery/'+siteID+'/RGB_ForestGeo.tif' 
-seg_laz_path = 'Imagery/'+siteID+'/LAS_ForestGeo.laz'
+seg_rgb_path = 'Imagery/'+siteID+'/RGB_ForestGeo.tif' 
+seg_pan_path = 'Imagery/'+siteID+'/PAN_ForestGeo.tif' 
+seg_laz_path = 'Imagery/'+siteID+'/LAS_ForestGeo.las'
 seg_hsi_img = 'Imagery/'+siteID+'/HSI_ForestGeo.tif'
-legacy_polygons = 'dp_'+siteID+'_404000_3285000.gpkg'
+legacy_polygons = 'dp_'+siteID+'_deepForest.gpkg'
 mode = 'only_points'
 point_type = "distance"
 
@@ -41,7 +41,7 @@ grid_space = 100 # pixels
 grid_size = 4 # meters from which set u the negative point mask
 seg_img_batch = 100
 seg_img_buffer = 10
-neighbors =4
+neighbors =6
 first_neigh = 1
 rescale_to = None
 resolution = 0.1
@@ -49,7 +49,7 @@ resolution = 0.1
 # Flags
 clip_each_instance = False
 store_clips = False
-clean_dataset=False
+clean_dataset=True
 get_clips = False
 noGUI = True
 get_tree_crowns = False
@@ -60,12 +60,12 @@ isrgb = True
 response = 'Status'
 
 # Hyperparameters
-hsi_out_features = 512
-rgb_out_features = 512
-lidar_out_features = 128
+hsi_out_features = 1054
+rgb_out_features = 1054
+lidar_out_features = 512
 in_channels = 6
 max_points = 2000
-num_epochs = 8
+num_epochs = 89
 batch_size = 32
 
 #comet experiment

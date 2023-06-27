@@ -73,6 +73,8 @@ class MultiModalDataset(Dataset):
 
         img_masked[img_masked < 0] = 0
         img_masked[img_masked > 10000] = 10000
+        # remove nan from the image by turning it to 0s
+        img_masked = np.nan_to_num(img_masked)
 
         # remove bands that are water absorption bands [0:14,190:219, 274:320, 399:425]
         bad_bands = np.concatenate([np.arange(0,14), np.arange(190,219), np.arange(274,320), np.arange(399,426)])  

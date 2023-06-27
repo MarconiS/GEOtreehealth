@@ -66,7 +66,7 @@ def build_data_schema():
         print('itc = get_tree_tops(laz_path)')
 
     #get affine of the raster used to extract the bounding boxes
-    with rasterio.open(config.data_path+config.seg_rgb_path) as src: 
+    with rasterio.open(config.data_path+config.seg_pan_path) as src: 
         rgb_transform = src.transform
         rgb_crs = src.crs
         rgb_width = src.width
@@ -102,7 +102,13 @@ def build_data_schema():
 
     #use only points whose crwnpst is greater than 2
     #itcs = itcs[itcs['Crwnpst'] > 2] #this comment it out soon. That kind of preprocessig should be done before the function is called
-    itcs = itcs[itcs['dbh'] > 10]
+    # remove rows of itcs non numeric itcs['DBH'] values from  and turn it into numeric
+    #itcs = itcs[pd.to_numeric(itcs['dbh'], errors='coerce').notnull()]
+    #itcs['dbh'] = pd.to_numeric(itcs['dbh'])
+    #itcs = itcs[itcs['dbh'] > 10]
+    #itcs = itcs.groupby('tag').first().reset_index()
+    #rename columns STEM_TAG and CTFS_DA into StemTag and Status
+    itcs = itcs.rename(columns={'status':'Status'})
     itcs.crs = rgb_crs
     image_file = os.path.join(config.data_path, config.seg_rgb_path)
     hsi_path = os.path.join(config.data_path, config.seg_hsi_img)
@@ -156,6 +162,8 @@ def build_data_schema():
             else:
                 itcs_boxes_ = None
             batch = batch_[:3,:,:].copy()
+            batch = np.nan_to_num(batch)
+
             affine = affines[i]
             # rescale  point and boxes coordiantes if using rgb as batch rather than hsi. 
             # please include this asap in the split_image function instead. Now just checking it out if it works
@@ -172,7 +180,7 @@ def build_data_schema():
             x_offset, y_offset = affine[2], affine[5]
             y_offset = y_offset - batch_size
 
-            itt = itcs[['StemTag','status']]#,'Crwnpst']]
+            itt = itcs[['StemTag','Status']]#,'Crwnpst']]
             predictions = predictions.merge(itt, how='left', on='StemTag')
 
             #from a geopandas, remove all rows with a None geometry
