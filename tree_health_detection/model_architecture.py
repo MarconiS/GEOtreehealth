@@ -27,6 +27,7 @@ from torch.nn import Sequential as Seq, Linear, ReLU
 import torch.nn.functional as F
 #from torch_geometric.nn import DynamicEdgeConv, global_max_pool
 
+
 class MultiModalNet(nn.Module):
     def __init__(self, in_channels, num_classes, num_bands,
                  hsi_out_features, rgb_out_features, lidar_out_features):
@@ -36,35 +37,53 @@ class MultiModalNet(nn.Module):
         self.rgb_out_features = rgb_out_features
         self.lidar_out_features = lidar_out_features
         self.num_classes = num_classes
+
         # 1. HSI branch: Spectral Attention Network
-        self.hsi_branch = SpectralAttentionNetwork(num_bands, hsi_out_features) # to be implemented
-        
+        self.hsi_branch = SpectralAttentionNetwork(num_bands, hsi_out_features)
+
         # 2. RGB branch: Spatial Attention + Hybrid Visual Transformer
-        self.rgb_branch = HybridViTWithAttention(num_classes=rgb_out_features)
+        self.rgb_branch = newViTWithAttention(num_classes=rgb_out_features)
+        #self.rgb_branch2 = PretrainedSpatialAttention(num_classes=rgb_out_features)
 
         # 3. LiDAR branch: DGCNN
         self.lidar_branch = DGCNN(in_channels, lidar_out_features)
 
+        # Cross modal mutual learning mechanics
+        # TODO Adding CMML layers for each modalities for cross learning with the same data dimensions
+        '''
+        self.cmml_hsi = nn.Linear(hsi_out_features, num_bands)
+        self.cmml_rgb = nn.Linear(rgb_out_features, in_channels)
+        self.cmml_lidar = nn.Linear(lidar_out_features, in_channels)
+        '''
         # Define the fully connected layer
         num_features = hsi_out_features + rgb_out_features + lidar_out_features
-        self.fc = nn.Linear(num_features, num_classes)  # replace num_classes with the number of your classes
+        self.fc = nn.Linear(num_features, num_classes)
 
     def forward(self, hsi, rgb, lidar):
-        # Pass inputs through corresponding branches
+        # Pass through branches
         hsi_out = self.hsi_branch(hsi)
         rgb_out = self.rgb_branch(rgb)
         lidar_out = self.lidar_branch(lidar)
 
+        # CMML: cross modal mutual learning
+        '''
+        hsi_out_cmml = self.cmml_hsi(hsi_out)
+        rgb_out_cmml = self.cmml_rgb(rgb_out)
+        lidar_out_cmml = self.cmml_lidar(lidar_out)
+        
+        # Pairwise learning
+        hsi_out = hsi_out + hsi_out_cmml.cross(rgb_out_cmml) + hsi_out_cmml.cross(lidar_out_cmml)
+        rgb_out = rgb_out + rgb_out_cmml.cross(hsi_out_cmml) + rgb_out_cmml.cross(lidar_out_cmml)
+        lidar_out = lidar_out + lidar_out_cmml.cross(hsi_out_cmml) + lidar_out_cmml.cross(rgb_out_cmml)
+        '''
         # Use adaptive average pooling to handle different image sizes
         hsi_out = nn.AdaptiveAvgPool2d((1,1))(hsi_out)
-        #lidar_out = torch.max(lidar_out, -1, keepdim=False)[0]  # apply global max pooling to lidar_out
 
-        
         # Flatten the outputs
         hsi_out = hsi_out.view(hsi_out.size(0), -1)
         lidar_out = lidar_out.view(lidar_out.size(0), -1)
-        
-        # Concatenate the outputs   
+
+        # Concatenate  
         out = torch.cat((hsi_out, rgb_out, lidar_out), dim=1)
 
         # Pass through final layer to make prediction
@@ -73,6 +92,34 @@ class MultiModalNet(nn.Module):
         return out
 
 
+import torch
+from torchvision.models import resnet50
+import torch.nn as nn
+from torch.nn import functional as F
+from timm.models import vision_transformer
+
+class newViTWithAttention(nn.Module):
+    def __init__(self, num_classes):
+        super(newViTWithAttention, self).__init__()
+        self.pretrained_vit = vision_transformer.vit_small_patch16_224(pretrained=True)
+        self.fc = nn.Linear(self.pretrained_vit.head.in_features, num_classes)
+        self.pretrained_vit.head = self.fc
+
+    def forward(self, x):
+        x = self.pretrained_vit(x)
+        return x
+
+class PretrainedSpatialAttention(nn.Module):
+    def __init__(self, num_classes):
+        super(PretrainedSpatialAttention, self).__init__()
+        self.res = resnet50(pretrained=True)
+        num_ftrs = self.res.fc.in_features
+        self.res.fc = nn.Linear(num_ftrs, num_classes)
+
+    def forward(self, x):
+        x = self.res(x)
+        return x
+    
 class SpectralAttentionLayer(nn.Module):
     def __init__(self, channel):
         super(SpectralAttentionLayer, self).__init__()
@@ -143,6 +190,40 @@ class VisualTransformer(nn.Module):
     def forward(self, x):
         x = self.vit.get_intermediate_layers(x)
         return x
+
+class ViTWithAttention(nn.Module):
+    def __init__(self, num_classes=3):
+        super(ViTWithAttention, self).__init__()
+
+        # Load pre-trained ViT for feature extraction
+        self.feature_extractor = timm.create_model('vit_base_patch16_224', pretrained=True)
+
+        # Add a fully connected layer for the final prediction
+        self.fc = nn.Linear(self.feature_extractor.head.in_features, num_classes)
+
+    def forward(self, x):
+        # Extract features using the ViT
+        features = self.feature_extractor(x)
+
+        # Pass the features through the fully connected layer
+        x = self.fc(features)
+
+        return x
+    
+class SpatialAttention(nn.Module):
+    def __init__(self, kernel_size=7):
+        super(SpatialAttention, self).__init__()
+
+        self.conv1 = nn.Conv2d(2, 1, kernel_size, padding=kernel_size//2, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        avg_out = torch.mean(x, dim=1, keepdim=True)
+        max_out, _ = torch.max(x, dim=1, keepdim=True)
+        x = torch.cat([avg_out, max_out], dim=1)
+        x = self.conv1(x)
+        return self.sigmoid(x)
+    
 
 class HybridViTWithAttention(nn.Module):
     def __init__(self, num_classes=3):

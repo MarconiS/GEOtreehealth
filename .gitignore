@@ -141,3 +141,5 @@ dmypy.json
 *.pth
 *.png
 *.cpg
+test.jpg
+output.csv

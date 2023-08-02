@@ -17,6 +17,7 @@ from .get_polygons  import (
     transform_coordinates,
     upscale_array,
     split_image,
-    get_bbox_diff
+    get_bbox_diff,
+    merge_and_apply_max_suppression
 )
 

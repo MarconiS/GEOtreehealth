@@ -115,7 +115,13 @@ def __main__():
 
         # Load your polygon data (GeoDataFrame)
         gdf = gpd.read_file(config.data_path + config.crowns+config.siteID+'_subset.gpkg', driver='GPKG')
-
+        
+        # remove rows with area < 4 m2
+        gdf = gdf[gdf['geometry'].area > 8]
+        gdf = gdf[gdf['selected'] == True]
+        #if gdf doesn't have colunm 'SiteID', add it
+        if 'SiteID' not in gdf.columns:
+            gdf["SiteID"] = config.siteID
         # Process each polygon
         for idx, row in gdf.iterrows():
             try:
@@ -139,17 +145,35 @@ def __main__():
             labels.append(tmp)
     # concatenate all dataframes in the list
     labels_df = pd.concat(labels, ignore_index=True)
-    # remove all AU labels
-    #labels_df = labels_df[~labels_df[config.response].isin(['AU'])]
-    # count the number of unique responses, and remove entries occurring less than 10 times
-    counts = labels_df[config.response].value_counts()
-    labels_df = labels_df[~labels_df[config.response].isin(counts[counts < 10].index)]
-    labels_df = labels_df.reset_index(drop=True)
-    # count the number of unique labels
-    rebalanced_to = labels_df[config.response].value_counts().min()
 
-    # downsample more frequent classes to balance dataset
-    labels_df = labels_df.groupby(config.response).apply(lambda x: x.sample(rebalanced_to)).reset_index(drop=True)
+    # if siteID is not null, select only rows with siteID
+    if config.site_training is not None:
+        labels_df = labels_df[labels_df['SiteID'] == config.siteID]
+    # only select rows where selected is True
+    if config.siteID is not "OSBS":
+        labels_df = labels_df[labels_df['selected'] == True]
+    # remove all AU labels
+    labels_df = labels_df[~labels_df[config.response].isin(['AU'])]
+
+    #if response is D chenge in DS
+    labels_df[config.response] = labels_df[config.response].replace(['D'], 'DS')
+    # count the number of unique responses, and remove entries occurring less than 10 times
+    #loop through all siteID and append the labels
+    sites = labels_df.SiteID.unique()
+
+    for site in sites:
+        counts = labels_df[labels_df['SiteID'] == site][config.response].value_counts()
+        # get tmp_labels, that is the labels that occur more than 10 times and have siteID == site
+        tmp_labels = labels_df[(labels_df[config.response].isin(counts[counts > 10].index)) & (labels_df['SiteID'] == site)]
+        tmp_labels = tmp_labels.reset_index(drop=True)
+        # count the number of unique labels
+        rebalanced_to = tmp_labels[config.response].value_counts().min()
+
+        # downsample more frequent classes to balance dataset
+        tmp_labels = tmp_labels.groupby(config.response).apply(lambda x: x.sample(rebalanced_to)).reset_index(drop=True)
+        # append tmp_labels to labels_df
+        labels_df = labels_df[labels_df['SiteID'] != site]
+        labels_df = pd.concat([labels_df, tmp_labels], ignore_index=True)
 
     # if labels_df['response'] is character, convert it into a numeric class
     if labels_df[config.response].dtype == 'object':
@@ -158,9 +182,11 @@ def __main__():
     labels_df = labels_df.reset_index(drop=True)
 
 
-    # Split the data into train-test-validation (70%-15%-15%) with stratification
-    train_data, temp_data = train_test_split(labels_df, test_size=0.3, random_state=42, stratify=labels_df[config.response])
-    test_data, val_data = train_test_split(temp_data, test_size=0.5, random_state=42, stratify=temp_data[config.response]) 
+    # Split the data into train-test-validation (70%-15%-15%) with stratification. Stratify by response, but also by siteID
+
+    labels_df['combined_stratify'] = labels_df[config.response].astype(str) + "_" + labels_df['SiteID'].astype(str)
+    train_data, temp_data = train_test_split(labels_df, test_size=0.3, random_state=42, stratify=labels_df['combined_stratify'])
+    test_data, val_data = train_test_split(temp_data, test_size=0.5, random_state=42, stratify=temp_data['combined_stratify'])
 
     #reset index of train, validation, test
     train_data = train_data.reset_index(drop=True)
@@ -196,7 +222,10 @@ def __main__():
 
     # Create an experiment with your api key
     #set up comet experiment
-    experiment = Experiment(project_name=config.comet_name, workspace=config.comet_workspace)
+    comet_api_key = os.environ.get('COMET_API_KEY')
+    if comet_api_key is None:
+        raise ValueError("COMET_API_KEY environment variable not set")
+    experiment = Experiment(project_name=config.comet_name, workspace=config.comet_workspace, api_key=comet_api_key)
     # Starting the experiment
 
     for epoch in range(config.num_epochs):
@@ -290,13 +319,7 @@ def __main__():
             correct += (predicted == labels_).sum().item()
             test_preds.extend(predicted.cpu().numpy())
             test_labels.extend(labels_.cpu().numpy())
-
             #save hsi as raster
-            
-            #rgb_img = rgb.cpu().numpy()
-            # save hsi raster wuth rasterio
-            #with rasterio.open('rgb_img.tif', 'w', driver='GTiff', width=rgb_img.shape[1], height=rgb_img.shape[2], count=rgb_img.shape[0], dtype=rgb_img.dtype) as dst:
-            #    dst.write(rgb_img)
         c_matrix = confusion_matrix(test_labels, test_preds)
         # Generate the class names (assumes that labels are integers starting from 0)
         class_names = [str(i) for i in range(c_matrix.shape[0])]
@@ -305,7 +328,6 @@ def __main__():
         matrix = {}
         for i, row in enumerate(c_matrix):
             matrix[class_names[i]] = dict(zip(class_names, row.tolist()))
-
 
         # Plotting RGB and HSI Images
         for i in range(len(rgb_)):
@@ -347,4 +369,4 @@ def __main__():
 
     return(model)
 
-# md = __main__()
+

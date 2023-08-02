@@ -79,8 +79,9 @@ class MultiModalDataset(Dataset):
         # remove bands that are water absorption bands [0:14,190:219, 274:320, 399:425]
         bad_bands = np.concatenate([np.arange(0,14), np.arange(190,219), np.arange(274,320), np.arange(399,426)])  
         img_masked = np.delete(img_masked, bad_bands, axis=0)
-        # Calculate the L2 norm for each row
         # Assuming `hyperspectral_data` is your hyperspectral data with shape (channels, height, width)
+        #img_masked = img_masked / np.linalg.norm(img_masked, axis=0)
+
         img_masked = self.normalize_hsi(img_masked)
 
         # Create PIL image from numpy array
@@ -112,6 +113,7 @@ class MultiModalDataset(Dataset):
         # img_rgb = rgb
         img_rgb[img_rgb < 0] = 0
         img_rgb[img_rgb > 255] = 255
+        img_rgb = np.nan_to_num(img_rgb)
 
         # Step 1: Check if there are non-zero pixels outside the 224x224 top-left corner
         non_zero_pixels = np.any(img_rgb[1,224:, :] != 0) or np.any(img_rgb[1,:, 224:] != 0)
@@ -141,10 +143,11 @@ class MultiModalDataset(Dataset):
     
     # data = img_masked
     def normalize_hsi(self, data):
-        # Transpose data to have shape (height, width, channels)
-        data = np.transpose(data, (1, 2, 0))
         # calculate the l2 norm along the 0-th dimension
         l2_norms = np.linalg.norm(data, axis=0)
+        # Transpose data to have shape (height, width, channels)
+        data = np.transpose(data, (1, 2, 0))
+        '''
         # add a small constant to avoid division by zero
         epsilon = 1e-8
         # normalize
@@ -162,6 +165,6 @@ class MultiModalDataset(Dataset):
         mask_zero = data == 0
         # set the values back to 0 where the initial data was 0
         x_scaled = np.where(mask_zero, 0, x_scaled)
-
-        return x_scaled
+        '''
+        return data
 

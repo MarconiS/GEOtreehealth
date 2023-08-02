@@ -17,6 +17,8 @@ import torch
 import imageio
 import rasterio
 from shapely.affinity import translate, scale
+from rtree import index
+from shapely.geometry import Polygon
 
 # Import the necessary libraries
 import os
@@ -150,20 +152,6 @@ def predict_tree_crowns(batch, input_points, affine, neighbors = 3, first_neigh 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     sam = sam_model_registry[config.model_type](checkpoint=config.sam_checkpoint)
     processor = SamProcessor.from_pretrained("facebook/sam-vit-huge")
-
-    #neighbors must be the minimum between the total number of input_points and the argument neighbors
-    #neighbors = min(input_points.shape[0]-2, neighbors)
-    #rescale image to larger size if rescale_to is not null
-    if rescale_to is not None:
-        batch = resize(batch, (rescale_to, rescale_to), order=3, mode='constant', cval=0, clip=True, preserve_range=True, anti_aliasing=False)
-        input_points['x'] = input_points['x'] * rescale_to / original_shape[1]
-        input_points['y'] = input_points['y'] * rescale_to / original_shape[0]
-        #rescale xmin, ymin, xmax, ymax of input_boxes
-        if input_boxes is not None:
-            input_boxes[:,0] = input_boxes[:,0] * rescale_to / original_shape[1]
-            input_boxes[:,1] = input_boxes[:,1] * rescale_to / original_shape[0]
-            input_boxes[:,2] = input_boxes[:,2] * rescale_to / original_shape[1]
-            input_boxes[:,3] = input_boxes[:,3] * rescale_to / original_shape[0]
     
     sam.to(device=device)
     predictor = SamPredictor(sam)
@@ -310,12 +298,11 @@ def predict_tree_crowns(batch, input_points, affine, neighbors = 3, first_neigh 
 
     if input_boxes is None or mode == 'only_points':# and onnx_model_path is None:
         #loop through each stem point, make a prediction, and save the prediction
-        if rgb == True:
-            input_point[:,0] = input_point[:,0] / resolution
-            input_point[:,1] = input_point[:,1] / resolution
-            grid_size = config.grid_size / resolution
+        input_point[:,0] = input_point[:,0] / resolution
+        input_point[:,1] = input_point[:,1] / resolution
+        grid_size = config.grid_size / resolution
+        if input_boxes is not None:
             input_boxes = input_boxes / resolution
-
 
         #which_stem = np.where(input_points['StemTag']== "0123031")
         #predictor.set_image(np.array(batch))
@@ -340,20 +327,10 @@ def predict_tree_crowns(batch, input_points, affine, neighbors = 3, first_neigh 
                 # using distance, get the indexes of input_points, ordered by distances
                 distances = np.linalg.norm(input_point - input_point[it], axis=1)
                 closest_indices = np.argsort(distances)[first_neigh:neighbors+first_neigh]
-            elif point_type == "cardinal":
-                closest_indices = np.argpartition(distances, 4)[:4]
-            
             elif point_type == "random":
                 #pick a random sample of points, making sure that none is the target point
                 closest_indices = np.random.choice(np.delete(np.arange(input_point.shape[0]), it), neighbors, replace=False)
-
             elif point_type == "grid":
-                #create a grid of points around the target_itc, the grid is a squared box around target_itc. 
-                # if neighbors = 4 get the corners of the box
-                # if neighbors = 8 get the corners and the midpoints of the sides
-                # if neighbors = 16 get the corners, the midpoints of the sides and the center
-                # if points outside the image, pick the closest point inside the image
-
                 points = []
                 #get the coordinates of the target_itc
                 x = target_itc[0]
@@ -427,6 +404,7 @@ def predict_tree_crowns(batch, input_points, affine, neighbors = 3, first_neigh 
 
             #subset_point = np.vstack((subset_point, [0.0, 0.0]))
             #subset_label = np.append(subset_label, -1)
+            '''
             inBB = 0
             if input_boxes is not None:
                 # extract the bounding box overlapping with the target point. 
@@ -447,12 +425,11 @@ def predict_tree_crowns(batch, input_points, affine, neighbors = 3, first_neigh 
                         # get the index of the box with the smallest distance
                         which_box = np.argmin(dist)
                         target_bbox = np.array([target_bbox[which_box, :]])
-
             else:
                 target_bbox = np.array([[min_x, min_y, max_x, max_y]])
-            
+            '''
             # turn batch into an image
-            
+            target_bbox = np.array([[min_x, min_y, max_x, max_y]])
             #np.transpose(np.array(batch), (1, 0, 2))
             #predictor.set_image(np.array(batch))
             subset_point[:,1]  = batch.shape[0] -  subset_point[:,1] 
@@ -513,8 +490,8 @@ def predict_tree_crowns(batch, input_points, affine, neighbors = 3, first_neigh 
                 # shift polygons coordinates to the original batch coordinates
                 polygons = [translate(poly, xoff=xmin, yoff=ymin) for poly in polygons]
                 # divide coordinates by 10 to get meters
-            if rgb:
-                polygons = [scale(poly, xfact= resolution, yfact= resolution, origin=(0,0,0)) for poly in polygons]
+            
+            polygons = [scale(poly, xfact= resolution, yfact= resolution, origin=(0,0,0)) for poly in polygons]
 
             if len(polygons) ==0:
                 continue
@@ -523,9 +500,9 @@ def predict_tree_crowns(batch, input_points, affine, neighbors = 3, first_neigh 
             # Create a GeoDataFrame and append the polygon
             gdf_temp = gpd.GeoDataFrame(geometry=[polygons[0]], columns=["geometry"])
             gdf_temp["score"] = scores
-            gdf_temp["inBB"] = inBB
+            #gdf_temp["inBB"] = inBB
             gdf_temp["StemTag"] = input_crowns.iloc[it]
-            gdf_temp.to_file("temp.gpkg", driver="GPKG")
+            #gdf_temp.to_file("temp.gpkg", driver="GPKG")
             # Append the temporary GeoDataFrame to the main GeoDataFrame
             crown_mask = pd.concat([crown_mask, gdf_temp], ignore_index=True)
             crown_scores.append(scores)
@@ -801,3 +778,46 @@ def mask_to_delineation(mk, target_itc,  buffer_size = 100):
             
 
     return polygons
+
+import geopandas as gpd
+from shapely.geometry import Polygon
+from shapely.ops import unary_union
+def merge_and_apply_max_suppression(out_name, threshold=0.3):
+    # List all gpkg files
+    pth = f'{config.data_path}/Crowns/{config.siteID}/'
+    gpkg_files = [f for f in os.listdir(pth) if f.endswith('.gpkg')]
+
+    # Load each file as geopandas and add to list
+    gpd_list = []
+    for file in gpkg_files:
+        gpd_df = gpd.read_file(pth+file)
+        gpd_list.append(gpd_df)
+
+    # Merge all geopandas dataframes into a single geopandas
+    merged_gpd = pd.concat(gpd_list, ignore_index=True)
+    merged_gpd['selected'] = True
+    merged_gpd.sort_values('score', ascending=False, inplace=True)
+    merged_gpd.reset_index(drop=True, inplace=True)
+
+    polygons = merged_gpd['geometry'].tolist()
+
+    # Create spatial index
+    idx = index.Index()
+    for pos, polygon in enumerate(polygons):
+        idx.insert(pos, polygon.bounds)
+
+    # non-maximum suppression with spatial index        
+    for current in range(len(polygons)):
+        # use spatial index to find neighboring polygons
+        for other in idx.intersection(polygons[current].bounds):
+            if current != other and merged_gpd.loc[current, 'selected'] == True:
+                intersection = polygons[current].intersection(polygons[other])
+                if intersection.area / max(polygons[other].area, polygons[current].area) > threshold:
+                    merged_gpd.loc[other, 'selected'] = False
+
+    merged_gpd.to_file(out_name, driver="GPKG")              
+    return merged_gpd
+
+#merge_and_apply_max_suppression()
+
+
