@@ -216,17 +216,18 @@ def __main__():
     
     model = model.to(device)
 
-    # Set up loss function and optimizer
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
-
-    # Create an experiment with your api key
+     # Create an experiment with your api key
     #set up comet experiment
     comet_api_key = os.environ.get('COMET_API_KEY')
     if comet_api_key is None:
         raise ValueError("COMET_API_KEY environment variable not set")
     experiment = Experiment(project_name=config.comet_name, workspace=config.comet_workspace, api_key=comet_api_key)
     # Starting the experiment
+
+   # Set up loss function and optimizer
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    # torch.cuda.empty_cache()
 
     for epoch in range(config.num_epochs):
         # Training

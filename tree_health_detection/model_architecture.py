@@ -42,18 +42,16 @@ class MultiModalNet(nn.Module):
         self.hsi_branch = SpectralAttentionNetwork(num_bands, hsi_out_features)
 
         # 2. RGB branch: Spatial Attention + Hybrid Visual Transformer
-        self.rgb_branch = newViTWithAttention(num_classes=rgb_out_features)
+        self.rgb_branch = ViTG14(rgb_out_features=rgb_out_features, num_classes = 1)
         #self.rgb_branch2 = PretrainedSpatialAttention(num_classes=rgb_out_features)
 
         # 3. LiDAR branch: DGCNN
         self.lidar_branch = DGCNN(in_channels, lidar_out_features)
 
         # Cross modal mutual learning mechanics
-        # TODO Adding CMML layers for each modalities for cross learning with the same data dimensions
+        # TODO Adding  CMML: cross modal mutual learning
         '''
-        self.cmml_hsi = nn.Linear(hsi_out_features, num_bands)
-        self.cmml_rgb = nn.Linear(rgb_out_features, in_channels)
-        self.cmml_lidar = nn.Linear(lidar_out_features, in_channels)
+
         '''
         # Define the fully connected layer
         num_features = hsi_out_features + rgb_out_features + lidar_out_features
@@ -67,14 +65,6 @@ class MultiModalNet(nn.Module):
 
         # CMML: cross modal mutual learning
         '''
-        hsi_out_cmml = self.cmml_hsi(hsi_out)
-        rgb_out_cmml = self.cmml_rgb(rgb_out)
-        lidar_out_cmml = self.cmml_lidar(lidar_out)
-        
-        # Pairwise learning
-        hsi_out = hsi_out + hsi_out_cmml.cross(rgb_out_cmml) + hsi_out_cmml.cross(lidar_out_cmml)
-        rgb_out = rgb_out + rgb_out_cmml.cross(hsi_out_cmml) + rgb_out_cmml.cross(lidar_out_cmml)
-        lidar_out = lidar_out + lidar_out_cmml.cross(hsi_out_cmml) + lidar_out_cmml.cross(rgb_out_cmml)
         '''
         # Use adaptive average pooling to handle different image sizes
         hsi_out = nn.AdaptiveAvgPool2d((1,1))(hsi_out)
@@ -97,6 +87,12 @@ from torchvision.models import resnet50
 import torch.nn as nn
 from torch.nn import functional as F
 from timm.models import vision_transformer
+from transformers import AutoImageProcessor, AutoModelForImageClassification
+from transformers import AutoModelForImageClassification, AutoTokenizer
+from transformers import AutoModel
+
+from PIL import Image
+import requests
 
 class newViTWithAttention(nn.Module):
     def __init__(self, num_classes):
@@ -119,7 +115,31 @@ class PretrainedSpatialAttention(nn.Module):
     def forward(self, x):
         x = self.res(x)
         return x
+
+
+class ViTG14(nn.Module):
+    def __init__(self, rgb_out_features, num_classes):
+        super(ViTG14, self).__init__()
+
+        self.vit = AutoModel.from_pretrained("microsoft/swin-tiny-patch4-window7-224")        
+        # Adding attention mechanism
+        self.attention = nn.MultiheadAttention(embed_dim=self.vit.config.hidden_size, num_heads=8)
+        self.fc1 = nn.Linear(49*self.vit.config.hidden_size, rgb_out_features)
+        self.fc2 = nn.Linear(rgb_out_features, num_classes)
+
+    def forward(self, x):
+        x = self.vit(x).last_hidden_state
+
+        x, _ = self.attention(x, x, x)
+        # reshape the output tensor from MultiheadAttention before feeding it to the linear layer
+        x = x.reshape(x.size(0), -1)
+        # pass through the linear layer
+        x = self.fc1(x)
+
+        return self.fc2(x)
+
     
+
 class SpectralAttentionLayer(nn.Module):
     def __init__(self, channel):
         super(SpectralAttentionLayer, self).__init__()
