@@ -153,7 +153,7 @@ def __main__():
     if config.siteID is not "OSBS":
         labels_df = labels_df[labels_df['selected'] == True]
     # remove all AU labels
-    labels_df = labels_df[~labels_df[config.response].isin(['AU'])]
+    #labels_df = labels_df[~labels_df[config.response].isin(['AU'])]
 
     #if response is D chenge in DS
     labels_df[config.response] = labels_df[config.response].replace(['D'], 'DS')
@@ -216,6 +216,12 @@ def __main__():
     
     model = model.to(device)
 
+    # Set up loss function and optimizer
+    criterion = nn.CrossEntropyLoss()
+    #optimizer = optim.Adam(model.parameters(), lr=0.00001)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01, weight_decay=1e-5)  #L2 regularization
+
+
      # Create an experiment with your api key
     #set up comet experiment
     comet_api_key = os.environ.get('COMET_API_KEY')
@@ -223,10 +229,6 @@ def __main__():
         raise ValueError("COMET_API_KEY environment variable not set")
     experiment = Experiment(project_name=config.comet_name, workspace=config.comet_workspace, api_key=comet_api_key)
     # Starting the experiment
-
-   # Set up loss function and optimizer
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
     # torch.cuda.empty_cache()
 
     for epoch in range(config.num_epochs):

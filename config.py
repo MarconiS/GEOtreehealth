@@ -2,7 +2,7 @@
 #rgb_tile = 'indir/SERC/rgb_clip.tif'
 #stem_path = 'indir/SERC/gradient_boosting_alignment.gpkg'
 siteID = "HARV"
-site_training = True
+site_training = False
 stem_path = "Stems/"+siteID+"_stems_standard.gpkg"
 hyperspectral_tile  = 'indir/'+siteID+'/hsi_clip.tif'
 las_file = 'indir/'+siteID+'/LiDAR.laz'
@@ -65,9 +65,9 @@ hsi_out_features = 128
 rgb_out_features = 128
 lidar_out_features = 128
 in_channels = 6
-max_points = 2000
-num_epochs = 20
-batch_size = 32
+max_points = 2700
+num_epochs = 50
+batch_size = 24
 
 #comet experiment
 comet_name = "treehealth"

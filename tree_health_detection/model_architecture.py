@@ -51,11 +51,13 @@ class MultiModalNet(nn.Module):
         # Cross modal mutual learning mechanics
         # TODO Adding  CMML: cross modal mutual learning
         '''
-
         '''
         # Define the fully connected layer
         num_features = hsi_out_features + rgb_out_features + lidar_out_features
         self.fc = nn.Linear(num_features, num_classes)
+        # Add batch normalization layer
+        self.dropout = nn.Dropout(0.5)
+        self.bn = nn.BatchNorm1d(num_classes)
 
     def forward(self, hsi, rgb, lidar):
         # Pass through branches
@@ -75,9 +77,12 @@ class MultiModalNet(nn.Module):
 
         # Concatenate  
         out = torch.cat((hsi_out, rgb_out, lidar_out), dim=1)
-
+        out = self.dropout(out)
         # Pass through final layer to make prediction
         out = self.fc(out)
+
+        # Apply batch normalization
+        out = self.bn(out)
 
         return out
 
@@ -125,7 +130,6 @@ class ViTG14(nn.Module):
         # Adding attention mechanism
         self.attention = nn.MultiheadAttention(embed_dim=self.vit.config.hidden_size, num_heads=8)
         self.fc1 = nn.Linear(49*self.vit.config.hidden_size, rgb_out_features)
-        self.fc2 = nn.Linear(rgb_out_features, num_classes)
 
     def forward(self, x):
         x = self.vit(x).last_hidden_state
@@ -136,7 +140,7 @@ class ViTG14(nn.Module):
         # pass through the linear layer
         x = self.fc1(x)
 
-        return self.fc2(x)
+        return x
 
     
 
