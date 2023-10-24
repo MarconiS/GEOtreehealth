@@ -38,7 +38,7 @@ url = "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth"
 
 detelineation = 'SAM'
 grid_space = 100 # pixels
-
+overlap = 300 # pixels
 grid_size = 4 # meters from which set u the negative point mask
 seg_img_batch = 100
 seg_img_buffer = 30

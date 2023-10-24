@@ -143,6 +143,14 @@ def build_data_schema():
                 sam_checkpoint = config.sam_checkpoint, model_type=config.model_type,
                 input_boxes = None)
         
+        # use fastSAM to get the tree crowns
+        predictions, _, _ = tree_delineation.get_polygons.predict_crowns_fast(batch=batch, 
+                input_points=input_points, rescale_to =config.rescale_to, affine = affine,
+                grid_size = config.grid_size, rgb = config.isrgb, resolution = config.resolution, 
+                neighbors=config.neighbors, mode = config.mode, point_type =  config.point_type,
+                sam_checkpoint = config.sam_checkpoint, model_type=config.model_type,
+                input_boxes = None)
+        
         torch.cuda.empty_cache()    
         # Apply the translation to the geometries in the GeoDataFrame
         x_offset, y_offset = affine[2], affine[5]
