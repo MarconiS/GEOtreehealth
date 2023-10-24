@@ -241,8 +241,7 @@ def batchsam(img_pth, itcs=None, input_boxes = None, debug = False):
         image_embeddings = model.get_image_embeddings(inputs["pixel_values"])
 
         # create an empty dataframe where to store the polygons
-        itc_list = []
-
+        gdf = gpd.GeoDataFrame(columns=['geometry', 'StemTag'], dtype=object)
         for treeid in range(tile_points.shape[0]):
             all_indices = np.delete(np.arange(tile_points.shape[0]), treeid)
 
@@ -352,13 +351,13 @@ def batchsam(img_pth, itcs=None, input_boxes = None, debug = False):
 
 
                 # to candidate polygons, append the tile_points.StemTag at index treeid
-                itc_list.append({'geometry': candidate_polygons[0], 'StemTag': tile_points.iloc[treeid].StemTag})
+                gdf.loc[treeid] = [candidate_polygons[0], tile_points.iloc[treeid].StemTag]
 
-            
-            # save to file using the tile name
-            gdf = gpd.GeoDataFrame(itc_list, columns=['stemID','geometry'])
+            gdf.set_geometry('geometry', inplace=True)
             gdf.crs = crs
-
+        
+            #save gdf to file using the tile name
+            gdf.to_file("outdir/tree_crowns/"+tile.split("/")[-1].replace(".tif", ".gpkg"), driver="GPKG")
             if debug == True:
                 # turn the list of polygons into a geopandas dataframe
                 gdf = gpd.GeoDataFrame(geometry=candidate_polygons)
@@ -372,9 +371,9 @@ def batchsam(img_pth, itcs=None, input_boxes = None, debug = False):
                 tree_polygon.to_file("tmp_tree_polygon.gpkg", driver="GPKG")
 
                 # save points_ to file
-                points_gdf= gpd.GeoDataFrame(geometry=tile_points.iloc[tree_index,1].copy())
+                points_gdf= gpd.GeoDataFrame(geometry=tile_points.geometry.copy())
                 points_gdf.crs = crs
-                points_gdf.to_file("tmp_points.gpkg", driver="GPKG")
+                points_gdf.to_file("outdir/tree_crowns/"+tile.split("/")[-1].replace(".tif", "stems.gpkg"), driver="GPKG")
 
                     
 
