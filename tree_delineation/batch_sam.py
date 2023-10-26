@@ -179,15 +179,17 @@ def remove_files_from_folder(folder_path):
 
 def batchsam(img_pth, itcs=None, input_boxes = None, debug = False):
 
-    img_pth = "/media/smarconi/Gaia/Macrosystem_2/NEON_processed/Imagery/HARV/PAN_ForestGeo.tif"
     # remove content in the folders  tmp/tiles
     remove_files_from_folder("tmp/tiles")
     split_raster(img_pth, out_dir="tmp/tiles", tile_size=(800, 800), overlap = config.overlap)
     img = glob.glob("tmp/tiles/*.tif")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = SamModel.from_pretrained("facebook/sam-vit-huge").to(device)
+    processor = SamProcessor.from_pretrained("facebook/sam-vit-huge")
 
     # for each tile, extract points overlapping and run teh model
     for tile in img:
-        tile = img[0]
+        #tile = img[0]
         # load the tile using rasterio
         with rasterio.open(tile) as src:
             # get the tile bounds
@@ -233,9 +235,7 @@ def batchsam(img_pth, itcs=None, input_boxes = None, debug = False):
             # for now a warning: we need to define a way to extract the points from the tile
             print("No points defined in the tile")
 
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model = SamModel.from_pretrained("facebook/sam-vit-huge").to(device)
-        processor = SamProcessor.from_pretrained("facebook/sam-vit-huge")
+
 
         inputs = processor(image, return_tensors="pt").to(device)
         image_embeddings = model.get_image_embeddings(inputs["pixel_values"])
@@ -244,13 +244,27 @@ def batchsam(img_pth, itcs=None, input_boxes = None, debug = False):
         gdf = gpd.GeoDataFrame(columns=['geometry', 'StemTag'], dtype=object)
         for treeid in range(tile_points.shape[0]):
             all_indices = np.delete(np.arange(tile_points.shape[0]), treeid)
+            if len(all_indices)>0:
+                distances = tile_points.iloc[all_indices].geometry.distance(tile_points.iloc[treeid].geometry)
+                if config.remove_too_close >0:
+                    # remove points that are too close to the treeid
+                    distances = distances[distances > config.remove_too_close]
 
-            distances = tile_points.iloc[all_indices].geometry.distance(tile_points.iloc[treeid].geometry)
-            sampled_indices = np.argsort(distances)[:config.neighbors]
-            # Now sample from this array without replacement
-            sampled_indices = np.random.choice(sampled_indices, config.neighbors, replace=False)
-            # if treeid in sampled_indices, remove it
-            sampled_indices = np.delete(sampled_indices, np.where(sampled_indices == treeid))
+                if len(distances) ==1:
+                    sampled_indices = [all_indices[0]]
+                else:
+                    sampled_indices = np.argsort(distances)[:min(config.neighbors*config.neighbors_multiplier, len(distances))]
+                    # Now sample from this array without replacement
+                    sampled_indices = np.random.choice(sampled_indices, config.neighbors, replace=False)
+                    # if treeid in sampled_indices, remove it
+                    sampled_indices = np.delete(sampled_indices, np.where(sampled_indices == treeid))
+
+                # make an array where 1 is followed by r0 as many times as neighbors
+                labels = np.zeros(len(sampled_indices)+1)
+                labels[0] = 1
+            else:
+                sampled_indices = [treeid]
+                labels = np.ones(1)
 
             # If you want to include the treeid at the beginning of your result array:
             tree_index = np.insert(sampled_indices, 0, treeid)
@@ -262,9 +276,7 @@ def batchsam(img_pth, itcs=None, input_boxes = None, debug = False):
             # convert to int
             points_ = points_.apply(pd.Series).astype(int)
 
-            # make an array where 1 is followed by r0 as many times as neighbors
-            labels = np.zeros(len(sampled_indices)+1)
-            labels[0] = 1
+
             if debug == True:
                 show_points_on_image(image,  points_, labels)
 
@@ -288,6 +300,8 @@ def batchsam(img_pth, itcs=None, input_boxes = None, debug = False):
             # pop the pixel_values as they are not neded
             inputs.pop("pixel_values", None)
             inputs.update({"image_embeddings": image_embeddings})
+            print(treeid)
+
 
             with torch.no_grad():
                 outputs = model(**inputs, multimask_output=False)
@@ -310,55 +324,53 @@ def batchsam(img_pth, itcs=None, input_boxes = None, debug = False):
                 # Detect all individual regions in the (boolean) mask
                 mask = mask.squeeze()
                 all_labels = measure.label(mask) 
-                for region_label in np.unique(all_labels):
-                    if region_label == 0:
+
+                # Create a mask for the current region
+                region_mask = all_labels == 1 # true in mask 
+                # Detect contours in the mask
+                contours = measure.find_contours(region_mask, 0.5) 
+                for contour in contours:
+                    if contour.shape[0] < 4:
                         continue  # skip the background
-                    # Create a mask for the current region
-                    region_mask = all_labels == region_label 
-                    # Detect contours in the mask
-                    contours = measure.find_contours(region_mask, 0.5) 
-                    for contour in contours:
-                        if contour.shape[0] < 4:
-                            continue  # skip the background
-                        # Reverse the (row, column) order to (x, y) and create a polygon for this contour
-                        polygon = Polygon(contour[:, ::-1]) 
-                        polygon_list.append(polygon)  # save all polygons for the current mask
+                    # Reverse the (row, column) order to (x, y) and create a polygon for this contour
+                    polygon = Polygon(contour[:, ::-1]) 
+                    polygon_list.append(polygon)  # save all polygons for the current mask
+                
+                # get the polygon that overlaps with thee coordiantes of treeid
+                tree_polygon = tile_points.iloc[treeid].geometry
+
+                polygon_list = [p.buffer(0) for p in polygon_list]
+                # get coordinates of the top left corner of the tile and use it to translate the polygons
+                x_offset, y_offset = transform[2], transform[5]
+                #y_offset = y_offset - original_shape[0]*transform[0]
+                # Loop through each polygon in the original list
+                polygon_list_rp = []
+                for p in polygon_list:
+                    # Scale the polygon coordinates by the pixel resolution (0.1)
+                    scaled_polygon = scale(p, xfact=transform[0], yfact=transform[4], origin=(0, 0))
                     
-                    # get the polygon that overlaps with thee coordiantes of treeid
-                    tree_polygon = tile_points.iloc[treeid].geometry
+                    # Translate the scaled polygon
+                    translated_polygon = translate(scaled_polygon, xoff=x_offset, yoff=y_offset)
+                    
+                    # Append the translated polygon to the new list
+                    polygon_list_rp.append(translated_polygon)
 
-                    polygon_list = [p.buffer(0) for p in polygon_list]
-                    # get coordinates of the top left corner of the tile and use it to translate the polygons
-                    x_offset, y_offset = transform[2], transform[5]
-                    #y_offset = y_offset - original_shape[0]*transform[0]
-                    # Loop through each polygon in the original list
-                    polygon_list_rp = []
-                    for p in polygon_list:
-                        # Scale the polygon coordinates by the pixel resolution (0.1)
-                        scaled_polygon = scale(p, xfact=transform[0], yfact=transform[4], origin=(0, 0))
-                        
-                        # Translate the scaled polygon
-                        translated_polygon = translate(scaled_polygon, xoff=x_offset, yoff=y_offset)
-                        
-                        # Append the translated polygon to the new list
-                        polygon_list_rp.append(translated_polygon)
+                # select the best candidate polygon by extracting the one that overlaps with the treeid coordinates
+                candidate_polygons = [p for p in polygon_list_rp if p.intersects(tree_polygon)]
+                #if candidate is empty, select the polygon whose centroid is the closest to the treeid coordinates
+                if len(candidate_polygons) == 0:
+                    candidate_polygons = [p for p in polygon_list_rp if p.distance(tree_polygon) == min([p.distance(tree_polygon) for p in polygon_list_rp])]
 
-                    # select the best candidate polygon by extracting the one that overlaps with the treeid coordinates
-                    candidate_polygons = [p for p in polygon_list_rp if p.intersects(tree_polygon)]
-                    #if candidate is empty, select the polygon whose centroid is the closest to the treeid coordinates
-                    if len(candidate_polygons) == 0:
-                        candidate_polygons = [p for p in polygon_list_rp if p.distance(tree_polygon) == min([p.distance(tree_polygon) for p in polygon_list_rp])]
+                if len(candidate_polygons) > 0:
+                    # to candidate polygons, append the tile_points.StemTag at index treeid
+                    gdf.loc[treeid] = [candidate_polygons[0], tile_points.iloc[treeid].StemTag]
 
+        gdf.set_geometry('geometry', inplace=True)
+        gdf.crs = crs
+        #save gdf to file using the tile name
+        gdf.to_file("outdir/tree_crowns/"+tile.split("/")[-1].replace(".tif", ".gpkg"), driver="GPKG")
 
-                # to candidate polygons, append the tile_points.StemTag at index treeid
-                gdf.loc[treeid] = [candidate_polygons[0], tile_points.iloc[treeid].StemTag]
-
-            gdf.set_geometry('geometry', inplace=True)
-            gdf.crs = crs
-        
-            #save gdf to file using the tile name
-            gdf.to_file("outdir/tree_crowns/"+tile.split("/")[-1].replace(".tif", ".gpkg"), driver="GPKG")
-            if debug == True:
+        if debug == True:
                 # turn the list of polygons into a geopandas dataframe
                 gdf = gpd.GeoDataFrame(geometry=candidate_polygons)
                 gdf.crs = crs
@@ -375,10 +387,13 @@ def batchsam(img_pth, itcs=None, input_boxes = None, debug = False):
                 points_gdf.crs = crs
                 points_gdf.to_file("outdir/tree_crowns/"+tile.split("/")[-1].replace(".tif", "stems.gpkg"), driver="GPKG")
 
-                    
+                        
 
 
-
+img_pth = "/media/smarconi/Gaia/Macrosystem_2/NEON_processed/Imagery/HARV/PAN_ForestGeo.tif"
+itcs = gpd.read_file(os.path.join(config.data_path+config.stem_path))
+itcs = itcs[itcs['crwnPstn'] > 2] #this comment it out soon. That kind of preprocessig should be done before the function is called
+batchsam(img_pth=img_pth, itcs=itcs, debug=False)
 
 
 
