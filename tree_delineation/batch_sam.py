@@ -2,7 +2,6 @@ import torch
 from PIL import Image
 import requests
 from transformers import SamModel, SamProcessor
-from ultralytics import FastSAM
 import numpy as np
 from transformers import (
     SamVisionConfig,
@@ -21,8 +20,6 @@ import config
 import rasterio
 import glob
 import os
-from ultralytics import FastSAM
-from ultralytics.models.fastsam import FastSAMPrompt, FastSAMPredictor
 import numpy as np
 from skimage import exposure
 import torch
@@ -36,6 +33,15 @@ import pandas as pd
 import geopandas as gpd
 #from tree_health_detection.src.get_itcs_polygons import mask_to_delineation
 from skimage import exposure
+
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+from samgeo import SamGeo, tms_to_geotiff
 
 
 # TODO this goes to utils.py >>>
@@ -119,15 +125,6 @@ def show_masks_on_image(raw_image, masks, scores):
       axes[i].axis("off")
     plt.show()
 
-import matplotlib.pyplot as plt
-import numpy as np
-import torch
-
-import matplotlib.pyplot as plt
-import numpy as np
-import torch
-from samgeo import SamGeo, tms_to_geotiff
-
 def show_single_mask_on_image(raw_image, mm, sc, points_=None, labels=None):
     if len(mm.shape) == 4:
         mm = mm.squeeze()
@@ -138,24 +135,24 @@ def show_single_mask_on_image(raw_image, mm, sc, points_=None, labels=None):
         sc = [sc.to.item()]
 
     nb_predictions = 1
-    axes = plt.subplots(1, nb_predictions, figsize=(15, 15))
-    axes = [axes]  # Make it a list for consistency
+    fig, axes = plt.subplots(1, 1)
 
     mask = mm.cpu().detach().numpy()
-    axes[0].imshow(np.array(raw_image))
+    axes.imshow(np.array(raw_image))
     # Assuming show_mask is a function you've defined to overlay the mask
     
-    show_mask(mask, axes[0])
+    show_mask(mask, axes)
 
     if points_ is not None:
         points_ = np.array(points_)
         if labels is None:
             labels = np.ones_like(points_[:, 0])
 
+
         show_points(points_, labels, plt.gca())
 
-    axes[0].set_title(f"Mask {0+1}, Score: {sc[0].cpu().item():.3f}")
-    axes[0].axis("off")
+    axes.set_title(f"Mask {0+1}, Score: {sc[0].cpu().item():.3f}")
+    axes.axis("off")
 
     plt.show()
 
@@ -176,8 +173,23 @@ def remove_files_from_folder(folder_path):
         if os.path.isfile(file_path):
             os.remove(file_path)
 
+def find_cardinal_direction(p1, p2):
+    x1, y1 = p1.x, p1.y
+    x2, y2 = p2.x, p2.y
+    if x2 > x1:
+        if y2 > y1:
+            return 'SE'
+        else:
+            return 'NE'
+    else:
+        if y2 > y1:
+            return 'SW'
+        else:
+            return 'NW'
+        
 
 def batchsam(img_pth, itcs=None, input_boxes = None, debug = False):
+    from shapely.geometry import Polygon
 
     # remove content in the folders  tmp/tiles
     remove_files_from_folder("tmp/tiles")
@@ -207,7 +219,6 @@ def batchsam(img_pth, itcs=None, input_boxes = None, debug = False):
         rs = np.rot90(rs, k=3)
         # flip image vertically
         rs = np.flip(rs, axis=0)
-        original_shape = rs.shape
         rs = exposure.rescale_intensity(rs, out_range=(0, 255))
         rs =  np.array(rs, dtype=np.uint8)
         image = Image.fromarray(rs, 'RGB')
@@ -228,6 +239,8 @@ def batchsam(img_pth, itcs=None, input_boxes = None, debug = False):
             gdf_bounds = gpd.GeoDataFrame({'geometry': [tile_bds]})
 
             tile_points = itcs[itcs.geometry.within(gdf_bounds.unary_union)]
+            # if there are spoints with the same stemTag, keep the one
+            tile_points = tile_points.drop_duplicates(subset=['StemTag'])
             tile_points = tile_points[['StemTag', 'geometry']].copy()
             # reset index of tile_points
             tile_points = tile_points.reset_index(drop=True)
@@ -243,6 +256,7 @@ def batchsam(img_pth, itcs=None, input_boxes = None, debug = False):
         # create an empty dataframe where to store the polygons
         gdf = gpd.GeoDataFrame(columns=['geometry', 'StemTag'], dtype=object)
         for treeid in range(tile_points.shape[0]):
+            #treeid =  61 for tile_points[tile_points['StemTag'] == '331510']
             all_indices = np.delete(np.arange(tile_points.shape[0]), treeid)
             if len(all_indices)>0:
                 distances = tile_points.iloc[all_indices].geometry.distance(tile_points.iloc[treeid].geometry)
@@ -253,11 +267,24 @@ def batchsam(img_pth, itcs=None, input_boxes = None, debug = False):
                 if len(distances) ==1:
                     sampled_indices = [all_indices[0]]
                 else:
-                    sampled_indices = np.argsort(distances)[:min(config.neighbors*config.neighbors_multiplier, len(distances))]
-                    # Now sample from this array without replacement
-                    sampled_indices = np.random.choice(sampled_indices, config.neighbors, replace=False)
-                    # if treeid in sampled_indices, remove it
-                    sampled_indices = np.delete(sampled_indices, np.where(sampled_indices == treeid))
+                    sampled_indices = []
+                    cardinal_buckets = {'NW': [], 'NE': [], 'SW': [], 'SE': []}
+
+                    for idx, distance in zip(all_indices, distances):
+                        direction = find_cardinal_direction(tile_points.iloc[treeid].geometry, tile_points.iloc[idx].geometry)
+                        cardinal_buckets[direction].append((idx, distance))
+                    
+                    for direction in cardinal_buckets.keys():
+                        cardinal_buckets[direction].sort(key=lambda x: x[1])
+                        if cardinal_buckets[direction]:
+                            sampled_indices.append(cardinal_buckets[direction][0][0])
+
+                    # If there are not enough neighbors in all cardinal directions, fill up with closest neighbors
+                    if len(sampled_indices) < config.neighbors:
+                        remaining_indices = [idx for bucket in cardinal_buckets.values() for idx, _ in bucket[1:]]
+                        remaining_indices = sorted(remaining_indices, key=lambda idx: tile_points.iloc[idx].geometry.distance(tile_points.iloc[treeid].geometry))
+                        sampled_indices += remaining_indices[:config.neighbors - len(sampled_indices)]
+
 
                 # make an array where 1 is followed by r0 as many times as neighbors
                 labels = np.zeros(len(sampled_indices)+1)
@@ -287,7 +314,7 @@ def batchsam(img_pth, itcs=None, input_boxes = None, debug = False):
             points_list_3d = [[[(coord) for coord in point] for point in points_group] for points_group in points_3d.tolist()]
 
             # convert labels in a list of lists of lists
-            labels_ = labels[np.newaxis, :]
+            labels_ = labels[np.newaxis, :].astype(int)
             
             # make sure the points are in nb_images, nb_predictions, nb_points_per_mask, 2
             if input_boxes is not None:
@@ -309,7 +336,7 @@ def batchsam(img_pth, itcs=None, input_boxes = None, debug = False):
             masks = processor.image_processor.post_process_masks(outputs.pred_masks.cpu(), inputs["original_sizes"].cpu(), inputs["reshaped_input_sizes"].cpu())
             scores = outputs.iou_scores
             if debug == True:
-                show_single_mask_on_image(image, masks[0], scores, points_=points_, labels=labels)
+                show_single_mask_on_image(raw_image = image, mm = masks[0], sc =  scores, points_=points_, labels=labels)
 
             from skimage import measure
             from shapely.geometry import Polygon, MultiPolygon
@@ -322,45 +349,69 @@ def batchsam(img_pth, itcs=None, input_boxes = None, debug = False):
             polygon_list = []
             for mask in masks:
                 # Detect all individual regions in the (boolean) mask
+                #check how many true pixels in the mask
+
                 mask = mask.squeeze()
                 all_labels = measure.label(mask) 
+                candidate_pool = []
+                for plg in range(1, all_labels.max()+1):
+                    if plg ==0:
+                        continue
 
-                # Create a mask for the current region
-                region_mask = all_labels == 1 # true in mask 
-                # Detect contours in the mask
-                contours = measure.find_contours(region_mask, 0.5) 
-                for contour in contours:
-                    if contour.shape[0] < 4:
-                        continue  # skip the background
-                    # Reverse the (row, column) order to (x, y) and create a polygon for this contour
-                    polygon = Polygon(contour[:, ::-1]) 
-                    polygon_list.append(polygon)  # save all polygons for the current mask
-                
-                # get the polygon that overlaps with thee coordiantes of treeid
-                tree_polygon = tile_points.iloc[treeid].geometry
+                    # Create a mask for the current region
+                    region_mask = all_labels == plg # true in mask 
 
-                polygon_list = [p.buffer(0) for p in polygon_list]
-                # get coordinates of the top left corner of the tile and use it to translate the polygons
-                x_offset, y_offset = transform[2], transform[5]
-                #y_offset = y_offset - original_shape[0]*transform[0]
-                # Loop through each polygon in the original list
-                polygon_list_rp = []
-                for p in polygon_list:
-                    # Scale the polygon coordinates by the pixel resolution (0.1)
-                    scaled_polygon = scale(p, xfact=transform[0], yfact=transform[4], origin=(0, 0))
+                    # to speed up the process a bit, remove regions that are too small or too large
+                    if region_mask.sum() < config.sam_min_area or region_mask.sum() > config.sam_max_area:
+                        continue
+                    # plot region_mask to check
+                    if debug == True:
+                        plt.imshow(region_mask)
+                        plt.show()
+
+                    # Detect contours in the mask
+                    contours = measure.find_contours(region_mask, 0.5) 
+                    for contour in contours:
+                        if contour.shape[0] < 4:
+                            continue  # skip the background
+                        # Reverse the (row, column) order to (x, y) and create a polygon for this contour
+                        polygon = Polygon(contour[:, ::-1]) 
+                        polygon_list.append(polygon)  # save all polygons for the current mask
                     
-                    # Translate the scaled polygon
-                    translated_polygon = translate(scaled_polygon, xoff=x_offset, yoff=y_offset)
-                    
-                    # Append the translated polygon to the new list
-                    polygon_list_rp.append(translated_polygon)
+                    # get the polygon that overlaps with thee coordiantes of treeid
+                    tree_polygon = tile_points.iloc[treeid].geometry
 
-                # select the best candidate polygon by extracting the one that overlaps with the treeid coordinates
-                candidate_polygons = [p for p in polygon_list_rp if p.intersects(tree_polygon)]
-                #if candidate is empty, select the polygon whose centroid is the closest to the treeid coordinates
+                    polygon_list = [p.buffer(0) for p in polygon_list]
+                    # get coordinates of the top left corner of the tile and use it to translate the polygons
+                    x_offset, y_offset = transform[2], transform[5]
+                    #y_offset = y_offset - original_shape[0]*transform[0]
+                    # Loop through each polygon in the original list
+                    polygon_list_rp = []
+                    for p in polygon_list:
+                        # Scale the polygon coordinates by the pixel resolution (0.1)
+                        scaled_polygon = scale(p, xfact=transform[0], yfact=transform[4], origin=(0, 0))
+                        
+                        # Translate the scaled polygon
+                        translated_polygon = translate(scaled_polygon, xoff=x_offset, yoff=y_offset)
+                        
+                        # Append the translated polygon to the new list
+                        polygon_list_rp.append(translated_polygon)
+
+                    # select the best candidate polygon by extracting the one that overlaps with the treeid coordinates
+                    candidate_polygons = [p for p in polygon_list_rp if p.intersects(tree_polygon)]
+                    #if candidate is empty, select the polygon whose centroid is the closest to the treeid coordinates
+                    if len(candidate_polygons) == 0:
+                        candidate_polygons = [p for p in polygon_list_rp if p.distance(tree_polygon) == min([p.distance(tree_polygon) for p in polygon_list_rp])]
+                    
+                    # add candidate polygon to canidate pool
+                    candidate_pool.append(candidate_polygons[0])
+                    
+                # among candidates, get the one overlapping with the treeid coordinates 
+                candidate_polygons = [p for p in candidate_pool if p.intersects(tree_polygon)]
                 if len(candidate_polygons) == 0:
-                    candidate_polygons = [p for p in polygon_list_rp if p.distance(tree_polygon) == min([p.distance(tree_polygon) for p in polygon_list_rp])]
-
+                        candidate_polygons = [p for p in candidate_pool if p.distance(tree_polygon) == min([p.distance(tree_polygon) for p in candidate_pool])]
+                    
+                # finally, append to geodataframe
                 if len(candidate_polygons) > 0:
                     # to candidate polygons, append the tile_points.StemTag at index treeid
                     gdf.loc[treeid] = [candidate_polygons[0], tile_points.iloc[treeid].StemTag]

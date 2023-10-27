@@ -30,9 +30,8 @@ seg_hsi_img = 'Imagery/'+siteID+'/HSI_ForestGeo.tif'
 legacy_polygons = 'dp_'+siteID+'_deepForest.gpkg'
 mode = 'only_points'
 point_type = "distance"
-neighbors_multiplier = 3
 
-remove_too_close = True
+remove_too_close = 3 # meters
 ttops = 'deepforest' # or lidR. For lidR, you need to install it and run the R script separately
 sam_checkpoint = "checkpoints/sam_vit_h_4b8939.pth"
 model_type = "vit_h"
@@ -44,8 +43,12 @@ overlap = 100 # pixels
 grid_size = 4 # meters from which set u the negative point mask
 seg_img_batch = 100
 seg_img_buffer = 30
-neighbors =8
-first_neigh = 30
+
+sam_min_area = 200
+sam_max_area = 40000
+neighbors =6
+neighbors_multiplier = 1
+first_neigh = 5
 rescale_to = None
 resolution = 0.1
 pseudo_rgb = [28,87,215]
