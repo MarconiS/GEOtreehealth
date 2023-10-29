@@ -157,6 +157,21 @@ def show_single_mask_on_image(raw_image, mm, sc, points_=None, labels=None):
     plt.show()
 
 
+def calculate_overlap(poly1, poly2):
+    return poly1.intersection(poly2).area / poly1.union(poly2).area
+
+def non_max_suppression(polygons):
+    polygons = sorted(polygons, key=lambda x: x.area, reverse=True)  # Sort polygons by area in descending order
+    keep = []
+    for poly in polygons:
+        keep_flag = True
+        for kept_poly in keep:
+            if calculate_overlap(poly, kept_poly) > 0.8:  # Overlaps more than 80%
+                keep_flag = False
+                break
+        if keep_flag:
+            keep.append(poly)
+    return keep
 
 
 # <<<
@@ -188,11 +203,12 @@ def find_cardinal_direction(p1, p2):
             return 'NW'
         
 
-def batchsam(img_pth, itcs=None, input_boxes = None, debug = False):
+def batchsam(img_pth, itcs=None, ttops = None, input_boxes = None, debug = False):
     from shapely.geometry import Polygon
 
     # remove content in the folders  tmp/tiles
     remove_files_from_folder("tmp/tiles")
+    remove_files_from_folder("tmp/tree_crowns")
     split_raster(img_pth, out_dir="tmp/tiles", tile_size=(800, 800), overlap = config.overlap)
     img = glob.glob("tmp/tiles/*.tif")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -201,7 +217,7 @@ def batchsam(img_pth, itcs=None, input_boxes = None, debug = False):
 
     # for each tile, extract points overlapping and run teh model
     for tile in img:
-        #tile = img[0]
+        # tile = img[0]
         # load the tile using rasterio
         with rasterio.open(tile) as src:
             # get the tile bounds
@@ -223,7 +239,8 @@ def batchsam(img_pth, itcs=None, input_boxes = None, debug = False):
         rs =  np.array(rs, dtype=np.uint8)
         image = Image.fromarray(rs, 'RGB')
         #show_points_on_image(image,  points_, labels)
-
+        if ttops is not None:
+            boxes_coords = tree_detection(tile, ttops = "deepforest")
         # define tree points in the tile
         if itcs is not None:
             # from the field_tree_points geopandas, extract the points that are within the tile bounds
@@ -245,8 +262,11 @@ def batchsam(img_pth, itcs=None, input_boxes = None, debug = False):
             # reset index of tile_points
             tile_points = tile_points.reset_index(drop=True)
         else:
-            # for now a warning: we need to define a way to extract the points from the tile
-            print("No points defined in the tile")
+            # calculat the centroid of the boxes_coords
+            tile_points = gpd.GeoDataFrame(geometry=[box.centroid for box in boxes_coords.geometry])
+            tile_points['StemTag'] = [str(i) for i in range(len(boxes_coords))]
+            tile_points = tile_points.reset_index(drop=True)
+            tile_points = tile_points[['StemTag', 'geometry']].copy()
 
 
 
@@ -418,8 +438,21 @@ def batchsam(img_pth, itcs=None, input_boxes = None, debug = False):
 
         gdf.set_geometry('geometry', inplace=True)
         gdf.crs = crs
+
+        # ... (existing batchsam code)
+
+        # Finally, before saving the gdf, apply non-max suppression
+        original_polygons = gdf['geometry'].tolist()
+        filtered_polygons = non_max_suppression(original_polygons)
+
+        # Create a new GeoDataFrame with filtered polygons
+        gdf_filtered = gdf[gdf['geometry'].isin(filtered_polygons)]
+
+        # Save filtered GeoDataFrame to file
+        gdf_filtered.to_file("tmp/tree_crowns/" + tile.split("/")[-1].replace(".tif", ".gpkg"), driver="GPKG")
+
         #save gdf to file using the tile name
-        gdf.to_file("outdir/tree_crowns/"+tile.split("/")[-1].replace(".tif", ".gpkg"), driver="GPKG")
+        #gdf.to_file("tmp/tree_crowns/"+tile.split("/")[-1].replace(".tif", ".gpkg"), driver="GPKG")
 
         if debug == True:
                 # turn the list of polygons into a geopandas dataframe
@@ -439,14 +472,81 @@ def batchsam(img_pth, itcs=None, input_boxes = None, debug = False):
                 points_gdf.to_file("outdir/tree_crowns/"+tile.split("/")[-1].replace(".tif", "stems.gpkg"), driver="GPKG")
 
                         
+def sam_tile_composite(indir, outdir, outname):
+    #indir = "outdir/tree_crowns/"
+    # get all files in the directory
+    files = os.listdir(indir)
+    # remove files that are not geopackages
+    files = [f for f in files if f.endswith(".gpkg")]
+    # sort files by name
+    files = sorted(files)
+    # get the first file
+    file = files[0]
+    # read it
+    gdf_tmp = gpd.read_file(os.path.join(indir, file))
+    # get the boundaries of gdf_tmp
+    bounds = gdf_tmp.total_bounds
+    # remove polygons that overlap with the edge of the plot (e.g. config.overlap)
+    gdf = gdf_tmp[~gdf_tmp.geometry.apply(lambda x: x.bounds).apply(lambda x: x[0] < bounds[0]+ 0.5
+                                                                    or x[1] < bounds[1]+ 0.5
+                                                                     or x[2] > bounds[2]- 0.5
+                                                                     or x[3] > bounds[3]- 0.5)]
+
+    # loop through the other files and append the polygons to the first file
+    for file in files[1:]:
+        gdf_tmp=gpd.read_file(os.path.join(indir, file))
+        bounds = gdf_tmp.total_bounds
+        gdf_tmp = gdf_tmp[~gdf_tmp.geometry.apply(lambda x: x.bounds).apply(lambda x: x[0] < bounds[0]+ 0.5
+                                                                    or x[1] < bounds[1]+ 0.5
+                                                                     or x[2] > bounds[2]- 0.5
+                                                                     or x[3] > bounds[3]- 0.5)]
+
+        gdf = pd.concat([gdf, gdf_tmp], ignore_index=True)
+
+    # save to file
+    gdf.to_file(os.path.join(outdir, outname), driver="GPKG")
 
 
-img_pth = "/media/smarconi/Gaia/Macrosystem_2/NEON_processed/Imagery/HARV/PAN_ForestGeo.tif"
+def tree_detection(rgb_path, ttops = "deepforest"):
+    import tree_delineation
+    from shapely.affinity import translate
+
+        #get affine of the raster used to extract the bounding boxes
+    with rasterio.open(rgb_path) as src: 
+        rgb_transform = src.transform
+        rgb_crs = src.crs
+        rgb_width = src.width
+        rgb_height = src.height
+ 
+    #get tree bounding boxes with deepForest for SAM
+    if ttops == 'deepforest':
+        bbox = tree_delineation.delineation_utils.extract_boxes(rgb_path)
+        
+        # assume that y origin is at the top of the image: shift coordinates of y accordingly
+        bbox['ymin'] = bbox['ymin'].apply(lambda y: rgb_height - y)
+        bbox['ymax'] = bbox['ymax'].apply(lambda y: rgb_height - y)
+
+        #use bbox xmin,ymin,xmax,ymax to make corners of bounding box polygons
+        bbox['geometry'] = bbox.apply(lambda row: tree_delineation.delineation_utils.create_bounding_box(row), axis=1)
+        x_offset, y_offset = rgb_transform[2], rgb_transform[5]
+        y_offset = y_offset - rgb_height*rgb_transform[0]
+        #from a geopandas, remove all rows with a None geometry
+        bbox = bbox[bbox['geometry'].notna()]
+
+        bbox = gpd.GeoDataFrame(bbox, geometry='geometry')
+        bbox["geometry"] = bbox["geometry"].apply(lambda geom: translate(geom, x_offset, y_offset))
+        bbox.crs = rgb_crs
+        return bbox
+
+
+import config
+img_pth = "/media/smarconi/Gaia/Macrosystem_2/NEON_processed/Imagery/HARV/RGB_ForestGeo.tif"
 itcs = gpd.read_file(os.path.join(config.data_path+config.stem_path))
 itcs = itcs[itcs['crwnPstn'] > 2] #this comment it out soon. That kind of preprocessig should be done before the function is called
-batchsam(img_pth=img_pth, itcs=itcs, debug=False)
+batchsam(img_pth=img_pth, itcs=None, ttops = config.ttops, debug=False)
 
 
+sam_tile_composite(indir = 'tmp/tree_crowns/', outdir=  "~/Documents/", outname="HARV_pan_df_crowns.gpkg")
 
 
 
